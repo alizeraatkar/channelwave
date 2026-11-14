@@ -1,9 +1,14 @@
 # CI and beta release operations
 
-`ChannelWave pipeline` validates every branch push and pull request. Binary publishing is disabled by default. Set the repository variable
-`CHANNELWAVE_ENABLE_RELEASES=true` only after configuring signing credentials
-and reviewing the enabled platforms. Once enabled, a push to `main` publishes
-a beta only after same-commit validation and all enabled package jobs succeed. Tag pushes do not trigger a second pipeline. The stable validation
+`ChannelWave pipeline` validates every branch push and pull request. Automatic
+installer releases are enabled for `alizeraatkar/channelwave`: each successful push
+to `main` publishes a new beta for Android ARM64, Windows x64 and Linux x64 after
+same-commit validation and every enabled package job succeeds.
+
+Other repositories must configure the required credentials and set
+`CHANNELWAVE_ENABLE_RELEASES=true` to enable publishing. Set it to `false` to pause
+publishing while keeping validation active. Tag pushes do not trigger a second
+pipeline. The stable validation
 check is `checks / Required checks`; require it on main where repository branch
 protection is available. A protection API permission/plan restriction must be
 reported rather than changing repository visibility.
