@@ -1,0 +1,21 @@
+@using ChannelWave.Core
+@implements IDisposable
+@inject PlaybackCoordinator Playback
+
+<div class="playback-modes" role="group" aria-label="Playback modes">
+    <button class="music-icon-button @(Playback.Queue.Shuffle ? "mode-active" : "")" aria-label="Shuffle" title="@(Playback.Queue.Shuffle ? "Turn shuffle off" : "Shuffle remaining songs")" aria-pressed="@Playback.Queue.Shuffle.ToString().ToLowerInvariant()" @onclick="() => Playback.SetShuffle(!Playback.Queue.Shuffle)"><MusicIcon Name="shuffle" /></button>
+    <button class="music-icon-button @(Playback.Queue.Repeat != RepeatMode.Off ? "mode-active" : "")" aria-label="@($"Repeat: {Playback.Queue.Repeat.ToString().ToLowerInvariant()}")" title="@RepeatDescription" @onclick="Playback.CycleRepeat"><MusicIcon Name="repeat" />@if (Playback.Queue.Repeat == RepeatMode.One) { <span class="repeat-one">1</span> }</button>
+</div>
+
+@code {
+    private bool disposed;
+    protected override void OnInitialized() => Playback.Changed += Changed;
+    private void Changed() { if (!disposed) _ = InvokeAsync(() => { if (!disposed) StateHasChanged(); }); }
+    public void Dispose() { disposed = true; Playback.Changed -= Changed; }
+    private string RepeatDescription => Playback.Queue.Repeat switch
+    {
+        RepeatMode.One => "Repeat one — change to repeat all",
+        RepeatMode.All => "Repeat all — turn repeat off",
+        _ => "Repeat off — change to repeat one"
+    };
+}

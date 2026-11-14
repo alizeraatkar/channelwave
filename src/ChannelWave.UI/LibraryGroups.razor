@@ -1,0 +1,40 @@
+@using ChannelWave.Core
+<CollectionViewport Items="Groups" ItemKey="g => g.Key" Class="@(Display == CollectionDisplay.List ? "discovery-groups groups-list" : "discovery-groups")" Grid="@(Display == CollectionDisplay.Grid)" Context="@($"{Mode}:{Display}")" Enabled="true" CanLoadMore="CanLoadMore" Loading="Loading" OnLoadMore="OnLoadMore" Version="Covers">
+    <RowTemplate Context="group">
+        <div class="discovery-group" @key="group.Key" data-track-key="@group.Key">
+            <button class="discovery-group-open" aria-label="@($"Open {(Mode == "albums" ? "album" : "artist")} {group.Label}{(group.Artist.Length > 0 ? $" by {group.Artist}" : "")}")" @onclick="() => OnOpen.InvokeAsync(group)">
+            @if (Covers.TryGetValue(group.ArtworkTrack, out var track)) { <TrackArtwork Track="track" Offline="true" AllowNetwork="false" /> }
+            else { <span class="discovery-group-fallback"><MusicIcon Name="@(Mode == "albums" ? "music" : "user")" /></span> }
+            <span class="discovery-group-label"><strong dir="auto">@group.Label</strong><span>@group.Count @(group.Count == 1 ? "track" : "tracks")</span></span>
+            </button>
+            @if (group.Artist.Length > 0)
+            {
+                @if (Covers.TryGetValue(group.ArtworkTrack, out var creditTrack)) { <MusicCreditLink Track="creditTrack" /> }
+                else { <span dir="auto">@group.Artist</span> }
+            }
+            <button class="icon-button group-pin" aria-label="@($"Pin {group.Label} to Home")" @onclick="() => Pin(group)"><MusicIcon Name="pin" /></button>
+        </div>
+    </RowTemplate>
+</CollectionViewport>
+@if (Groups.Count == 0 && !Loading)
+{
+    <div class="music-empty"><MusicIcon Name="@(Mode == "albums" ? "music" : "user")" /><h3>No matching @Mode</h3><p>@(Mode == "albums" ? "Albums appear when saved local metadata includes an album and artist. Browsing does not download audio to find tags." : "Artists appear when tracks have an artist credit. Try clearing a filter or browse all tracks.")</p></div>
+}
+@if (error is not null) { <p class="music-error" role="alert">@error</p> }
+@code {
+    [CascadingParameter] public LibraryPresentationStore? Store { get; set; }
+    [Parameter] public CollectionDisplay Display { get; set; }
+    private string? error;
+    private async Task Pin(LibraryGroup group)
+    {
+        try { if (Store is not null) await Store.PinAsync(new(Mode == "albums" ? LibraryItemKind.Album : LibraryItemKind.Artist, group.Key, group.Label)); }
+        catch (Exception e) { error = e.Message; }
+    }
+    [Parameter] public string Mode { get; set; } = "artists";
+    [Parameter] public IReadOnlyList<LibraryGroup> Groups { get; set; } = [];
+    [Parameter] public IReadOnlyDictionary<Guid, Track> Covers { get; set; } = new Dictionary<Guid, Track>();
+    [Parameter] public bool Loading { get; set; }
+    [Parameter] public bool CanLoadMore { get; set; }
+    [Parameter] public EventCallback OnLoadMore { get; set; }
+    [Parameter] public EventCallback<LibraryGroup> OnOpen { get; set; }
+}

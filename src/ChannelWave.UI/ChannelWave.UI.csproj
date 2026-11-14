@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+<ItemGroup>
+<ProjectReference Include="../ChannelWave.Core/ChannelWave.Core.csproj" />
+<ProjectReference Include="../ChannelWave.Telegram/ChannelWave.Telegram.csproj" />
+<PackageReference Include="Bit.BlazorUI" />
+<PackageReference Include="Microsoft.AspNetCore.Components.Web" />
+</ItemGroup>
+</Project>

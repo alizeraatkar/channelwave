@@ -1,0 +1,54 @@
+@using ChannelWave.Core
+<section class="library-landing" aria-label="Your Library">
+    <header class="collection-heading"><div><h1>Library</h1><p>Your collection, all here</p></div><button class="icon-button search-shortcut" aria-label="Open search" @onclick='() => OnNavigate.InvokeAsync("search")'><MusicIcon Name="search" /></button></header>
+    <div class="library-tiles">
+        @foreach (var tile in Tiles)
+        {
+            <button class="library-tile" @onclick="() => OnNavigate.InvokeAsync(tile.Page)"><MusicIcon Name="@tile.Icon" /><strong>@tile.Label</strong><span>@Count(tile.Page)</span></button>
+        }
+    </div>
+    <h2>Saved filters</h2>
+    <div class="library-tiles saved-filter-tiles">
+        @foreach (var filter in Store.Value.Filters.Where(f => f.ShowInLibrary))
+        {
+            <article class="saved-filter-tile" @key="filter.Id">
+                <button class="library-tile" @onclick="() => OnFilter.InvokeAsync(filter)"><MusicIcon Name="filters" /><strong dir="auto">@filter.Name</strong><span>Saved filter</span></button>
+                <details class="tile-menu"><summary aria-label="@($"Actions for {filter.Name}")"><MusicIcon Name="more" /></summary><div><button @onclick="() => Pin(filter)"><MusicIcon Name="pin" />Add to Home tabs</button><button @onclick="() => Remove(filter)"><MusicIcon Name="trash" />Remove tile</button></div></details>
+            </article>
+        }
+        <button class="library-tile add-filter" @onclick="() => adding = true"><MusicIcon Name="plus" /><strong>Save a filter</strong></button>
+    </div>
+    @if (error is not null) { <p class="music-error" role="alert">@error</p> }
+    <LibraryDialog Open="adding" Title="Save a filter" OnClose="() => adding = false">
+        <p>Create a filter from your music, or restore a saved shortcut.</p>
+        <button @onclick="Create"><MusicIcon Name="filters" />Create a filter</button>
+        @foreach (var filter in Store.Value.Filters.Where(f => !f.ShowInLibrary))
+        {
+            <button @onclick="() => Restore(filter)"><MusicIcon Name="plus" /><span dir="auto">@filter.Name</span></button>
+        }
+    </LibraryDialog>
+</section>
+@code {
+    [CascadingParameter] public LibraryPresentationStore Store { get; set; } = null!;
+    [Parameter] public LibraryOverview? Overview { get; set; }
+    [Parameter] public int PlaylistCount { get; set; }
+    [Parameter] public int OfflineCount { get; set; }
+    [Parameter] public int SourceCount { get; set; }
+    [Parameter] public EventCallback<string> OnNavigate { get; set; }
+    [Parameter] public EventCallback<SavedLibraryFilter> OnFilter { get; set; }
+    private bool adding;
+    private string? error;
+    private static readonly (string Page, string Label, string Icon)[] Tiles =
+    [ ("tracks", "Tracks", "music"), ("artists", "Artists", "user"), ("albums", "Albums", "album"), ("playlists", "Playlists", "list"),
+      ("offline", "Offline", "download"), ("activity", "Listening activity", "history"), ("channels", "Sources", "source") ];
+    private string Count(string page) => page switch
+    {
+        "tracks" => Overview is null ? "" : $"{Overview.Tracks} tracks", "artists" => Overview is null ? "" : $"{Overview.Artists} artists",
+        "albums" => Overview is null ? "" : $"{Overview.Albums} albums", "playlists" => $"{PlaylistCount} playlists",
+        "offline" => $"{OfflineCount} saved", "channels" => $"{SourceCount} sources", _ => ""
+    };
+    private async Task Pin(SavedLibraryFilter filter) { try { await Store.PinAsync(new(LibraryItemKind.Filter, filter.Id.ToString(), filter.Name)); } catch (Exception e) { error = e.Message; } }
+    private async Task Remove(SavedLibraryFilter filter) { try { await Store.ShowFilterAsync(filter.Id, false); } catch (Exception e) { error = e.Message; } }
+    private async Task Restore(SavedLibraryFilter filter) { try { await Store.ShowFilterAsync(filter.Id, true); adding = false; } catch (Exception e) { error = e.Message; } }
+    private async Task Create() { adding = false; await OnNavigate.InvokeAsync("search"); }
+}

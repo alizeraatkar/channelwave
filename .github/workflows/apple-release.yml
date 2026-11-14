@@ -1,0 +1,125 @@
+name: Apple distribution
+on:
+  workflow_call:
+    inputs:
+      sha: { type: string, required: true }
+      version: { type: string, required: true }
+      base-version: { type: string, required: true }
+      build-number: { type: string, required: true }
+      macos: { type: boolean, required: true }
+      ios: { type: boolean, required: true }
+    secrets:
+      APPLE_CERTIFICATES_BASE64: { required: true }
+      APPLE_CERTIFICATES_PASSWORD: { required: true }
+      APPLE_PROFILES_BASE64: { required: true }
+      ASC_KEY_BASE64: { required: true }
+      ASC_KEY_ID: { required: true }
+      ASC_ISSUER_ID: { required: true }
+      TELEGRAM_API_ID: { required: true }
+      TELEGRAM_API_HASH: { required: true }
+permissions:
+  contents: read
+jobs:
+  distribute:
+    runs-on: macos-26
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { platform: macos, native: maccatalyst, enabled: '${{ inputs.macos }}' }
+          - { platform: ios, native: ios, enabled: '${{ inputs.ios }}' }
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.tools/nuget-application
+    steps:
+      - if: matrix.enabled
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ inputs.sha }}', persist-credentials: false }
+      - if: matrix.enabled
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with: { global-json-file: global.json }
+      - if: matrix.enabled
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with: { node-version: '24.15.0' }
+      - if: matrix.enabled
+        name: Select and assert Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          xcodebuild -version | grep -Fx 'Xcode 26.6'
+          brew install gperf
+      - if: matrix.enabled
+        shell: pwsh
+        run: ./scripts/install-workloads.ps1 -Workloads maui-ios,maui-maccatalyst
+      - if: matrix.enabled
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: native
+        with:
+          path: artifacts/tdlib/${{ matrix.native }}
+          key: tdlib-${{ matrix.native }}-v2-${{ hashFiles('vendor/tdlib.lock.json', '.github/release.json', 'scripts/build-tdlib-windows.ps1', 'scripts/build-tdlib-apple.sh', 'scripts/tdlib-linux.Dockerfile', 'scripts/verify-native.py') }}
+      - if: matrix.enabled && steps.native.outputs.cache-hit != 'true'
+        run: bash scripts/build-tdlib-apple.sh '${{ matrix.native }}'
+      - if: matrix.enabled
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: reservation, path: artifacts }
+      - if: matrix.enabled
+        name: Prepare temporary credentials
+        env:
+          APPLE_CERTIFICATES_BASE64: ${{ secrets.APPLE_CERTIFICATES_BASE64 }}
+          APPLE_CERTIFICATES_PASSWORD: ${{ secrets.APPLE_CERTIFICATES_PASSWORD }}
+          APPLE_PROFILES_BASE64: ${{ secrets.APPLE_PROFILES_BASE64 }}
+          ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: |
+          password=$(openssl rand -hex 32)
+          echo "::add-mask::$password"
+          echo "APPLE_TEMP_KEYCHAIN_PASSWORD=$password" >> "$GITHUB_ENV"
+          export APPLE_TEMP_KEYCHAIN_PASSWORD="$password"
+          bash scripts/prepare-apple.sh
+          python3 scripts/prepare-telegram.py src/ChannelWave.Host.Maui/Resources/Raw/telegram.json
+      - if: matrix.enabled
+        name: Sign, verify and distribute
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          BASE_VERSION: ${{ inputs.base-version }}
+          RELEASE_BUILD_NUMBER: ${{ inputs.build-number }}
+          APPLE_SIGNING_IDENTITY_MACOS: ${{ vars.APPLE_SIGNING_IDENTITY_MACOS }}
+          APPLE_PROFILE_MACOS: ${{ vars.APPLE_PROFILE_MACOS }}
+          APPLE_SIGNING_IDENTITY_IOS: ${{ vars.APPLE_SIGNING_IDENTITY_IOS }}
+          APPLE_PROFILE_IOS: ${{ vars.APPLE_PROFILE_IOS }}
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_APP_ID: ${{ vars.ASC_APP_ID }}
+          ASC_INTERNAL_GROUP_ID: ${{ vars.ASC_INTERNAL_GROUP_ID }}
+        run: bash scripts/package-apple.sh '${{ matrix.platform }}'
+      - if: always() && matrix.enabled
+        name: Destroy temporary signing material
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+        run: |
+          security delete-keychain "$RUNNER_TEMP/channelwave-apple/signing.keychain-db" || true
+          python3 - <<'PY'
+          import os, json
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])/'channelwave-apple'
+          profiles=Path.home()/'Library/MobileDevice/Provisioning Profiles'
+          if (root/'imported-profiles.json').exists():
+              for name in json.loads((root/'imported-profiles.json').read_text()):
+                  target=(profiles/name).resolve()
+                  if target.parent != profiles.resolve(): raise ValueError('Invalid profile cleanup path')
+                  target.unlink(missing_ok=True)
+          key=Path.home()/'.appstoreconnect/private_keys'/('AuthKey_'+os.environ['ASC_KEY_ID']+'.p8')
+          key.unlink(missing_ok=True)
+          PY
+          rm -rf "$RUNNER_TEMP/channelwave-apple"
+          git restore -- src/ChannelWave.Host.Maui/Resources/Raw/telegram.json
+      - if: matrix.enabled
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: artifacts/release-${{ matrix.platform }}/*
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 30

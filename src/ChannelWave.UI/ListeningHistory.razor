@@ -1,0 +1,191 @@
+@using ChannelWave.Core
+@using System.Globalization
+@implements IDisposable
+@inject ILibraryRepository Library
+@inject PlaybackCoordinator Playback
+@inject PlaybackMediaResolver Media
+@inject ListeningPlaybackActions Actions
+@inject IRuntimeHost Host
+
+<section class="listening-widget listening-history-widget" aria-labelledby="listening-history-title" aria-busy="@loading.ToString().ToLowerInvariant()">
+    <header class="listening-widget-heading"><h2 id="listening-history-title" tabindex="-1" @ref="heading">Playback history</h2><div><ListeningIconButton Icon="search" Label="@(searchOpen ? "Close history search" : "Search listening history")" OnClick="ToggleSearch" /><ListeningIconButton Icon="close" Label="Clear history filters" OnClick="Reset" /></div></header>
+    @if (searchOpen)
+    {
+        <div class="listening-filters"><label class="listening-search"><MusicIcon Name="search" /><span class="music-sr-only">Search listening history</span><input @ref="searchInput" type="search" placeholder="Search title, artist or source" value="@search" @oninput="Search" /></label></div>
+    }
+    <div class="listening-history-filters" role="group" aria-label="Filter history">
+        <span>Filter history</span>
+        @foreach (var option in ListenFilters)
+        {
+            <button type="button" aria-pressed="@((qualification == option.Key).ToString().ToLowerInvariant())" @onclick="() => Qualification(option.Key)">@option.Label</button>
+        }
+    </div>
+    @if (trackFilter is not null) { <p class="listening-caption">Showing listens for the selected track. Clear history filters to show all tracks.</p> }
+    @if (!RangeValid) { <p role="status">Choose a valid date range above to view history.</p> }
+    @if (error is not null) { <div class="music-error" role="alert">@error <ListeningIconButton Icon="retry" Label="Retry loading listening history" OnClick="Reload" /></div> }
+    @if (feedback is not null) { <p role="status" class="music-feedback">@feedback</p> }
+    @if (loading) { <LoadingIndicator Label="Loading listening history…" /> }
+    else if (RangeValid && rows.Length == 0 && error is null) { <div class="listening-empty"><MusicIcon Name="history" /><h3>@(Filtered ? "No matching listens" : "No listening in this period")</h3><p>@(Filtered ? "Try another period, source or search." : Playback.ListeningPreferences.Collect ? "Choose another period or play a song to build your history. Partial listens appear here too." : "Enable collection in Listening & privacy to record future listening.")</p></div> }
+    @foreach (var group in DayRows().GroupBy(x => x.Day).OrderByDescending(g => g.Key))
+    {
+        <section class="listening-day"><h3>@DayLabel(group.Key)</h3><ol class="listening-list">
+        @foreach (var row in group.OrderByDescending(x => x.First))
+        {
+            var listen = row.Listen;
+            var track = currentTracks.GetValueOrDefault(listen.Track.Id);
+            var playable = track is not null && !track.Origin.Protected && (track.Available || saved.Contains(track.Id));
+            <li @key="(listen.Id, group.Key)" data-listen-id="@listen.Id">
+                <TrackArtwork Track="@(track ?? listen.Track.Placeholder())" Offline="true" AllowNetwork="false" />
+                <div class="listening-identity"><strong dir="auto">@listen.Track.Title</strong>@if (track is not null) { <MusicCreditLink Track="track" /> } else { <span dir="auto">@listen.Track.Artist</span> }<span class="listening-mobile-source" dir="auto">@listen.Track.Source</span>@if (!playable) { <small>Recording unavailable</small> }</div>
+                <span class="listening-source" dir="auto">@listen.Track.Source</span>
+                <span class="listening-heard">@Time(row.Milliseconds) heard @if (listen.QualifiedAt is null) { <small>Partial</small> } @if (ListeningPeriods.Day(listen.Started, TimeZoneInfo.Local) != group.Key) { <small>Continued</small> }</span>
+                <time datetime="@DateTimeOffset.FromUnixTimeMilliseconds(row.First).ToString("O")" title="@Local(row.First).ToString("yyyy-MM-dd HH:mm:ss zzz")">@Local(row.First).ToString("HH:mm")</time>
+                <div class="listening-row-actions"><ListeningIconButton Icon="play" Label="@($"Play {listen.Track.Title}")" Disabled="@(!playable)" OnClick="() => Act(() => Actions.PlayAsync(listen.Track))" /><ListeningIconButton Icon="more" Label="@($"Details and actions for {listen.Track.Title}")" OnClick="() => details = listen" /></div>
+            </li>
+        }
+        </ol></section>
+    }
+    <nav class="listening-paging" aria-label="Listening history pages"><ListeningIconButton Icon="previous" Label="Newer listens" Disabled="@(previous.Count == 0 || loading)" OnClick="Newer" /><span>@(previous.Count + 1)</span><ListeningIconButton Icon="next" Label="Older listens" Disabled="@(next is null || loading)" OnClick="Older" /></nav>
+</section>
+@if (details is { } selected)
+{
+    var track = currentTracks.GetValueOrDefault(selected.Track.Id);
+    <LibraryDialog Open="true" Title="Listening details" OnClose="() => details = null">
+        <h3 dir="auto">@selected.Track.Title</h3><p dir="auto">@selected.Track.Artist · @selected.Track.Source</p>
+        <dl class="listening-details"><dt>Time heard</dt><dd>@Time(selected.ActiveMilliseconds)</dd><dt>Play</dt><dd>@(selected.QualifiedAt is null ? "Partial listen" : $"Qualified at {Local(selected.QualifiedAt.Value):g}")</dd><dt>Outcome</dt><dd>@selected.Outcome</dd><dt>Positions</dt><dd>@Position(selected.StartPosition) → @Position(selected.EndPosition)</dd><dt>Playback</dt><dd>@(selected.Offline ? "Offline only" : "Online or saved audio")@(selected.Resumed ? " · Resumed" : "")</dd></dl>
+        @if (selected.HasGaps) { <p>Unobserved intervals were excluded from listening time.</p> }
+        @if (error is not null) { <p class="music-error" role="alert">@error</p> }
+        @if (feedback is not null) { <p role="status">@feedback</p> }
+        <div class="listening-dialog-actions"><ListeningIconButton Icon="play" Label="Play this recording" OnClick="() => Act(() => Actions.PlayAsync(selected.Track))" /><ListeningIconButton Icon="next" Label="Play this recording next" OnClick="() => Act(() => Actions.EnqueueAsync(selected.Track, true))" /><ListeningIconButton Icon="queue" Label="Add this recording to queue" OnClick="() => Act(() => Actions.EnqueueAsync(selected.Track, false))" /><ListeningIconButton Icon="source" Label="Open this source" OnClick="() => OnSource.InvokeAsync(selected.Track.Chat)" /><ListeningIconButton Icon="search" Label="Show listens for this track" OnClick="() => FilterTrack(selected.Track.Id)" /><ListeningIconButton Icon="trash" Label="Delete this listen" Class="listening-danger" OnClick="() => deleting = selected" /></div>
+        @if (track is not null) { <TelegramTrackDetails Track="track" /> }
+        <details><summary>Listening intervals</summary><ul>@foreach (var span in selected.Spans) { <li>@Local(span.Start).ToString("g") – @Local(span.End).ToString("T") · @Time(span.ActiveMilliseconds)</li> }</ul></details>
+    </LibraryDialog>
+}
+<LibraryDialog Open="@(deleting is not null)" Title="Delete this listen?" OnClose="() => deleting = null"><p>This removes the listen from history and statistics, including its continued days.</p><div class="listening-dialog-actions"><ListeningIconButton Icon="close" Label="Cancel deleting listen" OnClick="() => deleting = null" /><ListeningIconButton Icon="trash" Label="Confirm delete listen" Class="listening-danger" OnClick="Delete" /></div></LibraryDialog>
+@code {
+    [Parameter] public long Account { get; set; }
+    [Parameter] public long From { get; set; }
+    [Parameter] public long To { get; set; }
+    [Parameter] public long? SourceId { get; set; }
+    [Parameter] public bool RangeValid { get; set; }
+    [Parameter] public long FilterRevision { get; set; }
+    [Parameter] public long RefreshRevision { get; set; }
+    [Parameter] public EventCallback<long> OnSource { get; set; }
+    private readonly CancellationTokenSource lifetime = new();
+    private CancellationTokenSource? read;
+    private ListeningEvent[] rows = [];
+    private Dictionary<Guid, Track?> currentTracks = [];
+    private HashSet<Guid> saved = [];
+    private readonly Stack<ListeningCursor?> previous = [];
+    private ListeningCursor? cursor, next;
+    private ListeningEvent? details, deleting;
+    private string search = "", qualification = "";
+    private Guid? trackFilter;
+    private long loadedFrom, loadedTo = long.MaxValue;
+    private bool loading, disposed;
+    private string? error, feedback;
+    private ElementReference heading, searchInput;
+    private bool searchOpen, focusSearch, focusHeading;
+    private long loadedRevision = -1, loadedFilterRevision = -1;
+    private int searchRevision;
+    private static readonly (string Key, string Label)[] ListenFilters = [("", "All listens"), ("qualified", "Qualified plays"), ("partial", "Partial listens")];
+    private bool Filtered => search.Length > 0 || SourceId is not null || qualification.Length > 0 || trackFilter is not null;
+    protected override async Task OnParametersSetAsync()
+    {
+        if (loadedRevision == RefreshRevision && loadedFilterRevision == FilterRevision) return;
+        var reset = loadedFilterRevision != FilterRevision;
+        loadedRevision = RefreshRevision; loadedFilterRevision = FilterRevision;
+        if (reset) { previous.Clear(); cursor = null; details = deleting = null; }
+        await Load();
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (disposed) return;
+        if (focusSearch && searchOpen) { focusSearch = false; await searchInput.FocusAsync(); }
+        else if (focusHeading) { focusHeading = false; await heading.FocusAsync(); }
+    }
+    private async Task Load()
+    {
+        if (disposed) return;
+        read?.Cancel(); read?.Dispose(); read = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token); var token = read.Token;
+        searchRevision++;
+        rows = []; currentTracks = []; saved = []; next = null;
+        loading = RangeValid; error = feedback = null;
+        if (!RangeValid) return;
+        try
+        {
+            if (Library is not IListeningStore store) throw new NotSupportedException("Listening storage is unavailable on this host.");
+            var queryFrom = From; var queryTo = To;
+            var page = await store.HistoryAsync(Account, new(queryFrom, queryTo, search, SourceId,
+                trackFilter, qualification == "" ? null : qualification == "qualified", cursor), token);
+            var tracks = new Dictionary<Guid, Track?>();
+            foreach (var id in page.Items.Select(x => x.Track.Id).Distinct()) tracks[id] = await Media.ResolveAsync(Account, id, token);
+            var offline = (await Host.OfflineCopiesAsync(Account, token)).Where(x => x.Health == OfflineHealth.Saved).Select(x => x.Track.Id).ToHashSet();
+            token.ThrowIfCancellationRequested(); rows = page.Items; next = page.Next; currentTracks = tracks; saved = offline;
+            loadedFrom = queryFrom; loadedTo = queryTo;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e) { if (!token.IsCancellationRequested) error = e.Message; }
+        finally { if (!token.IsCancellationRequested) loading = false; }
+    }
+    private Task Reload() { previous.Clear(); cursor = null; return Load(); }
+    private async Task Search(ChangeEventArgs e)
+    {
+        search = e.Value?.ToString() ?? ""; read?.Cancel();
+        var request = ++searchRevision;
+        try { await Task.Delay(250, lifetime.Token); if (request == searchRevision && !disposed) await Reload(); }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+    }
+    private async Task ToggleSearch()
+    {
+        searchOpen = !searchOpen;
+        if (searchOpen) focusSearch = true;
+        else { search = ""; focusHeading = true; await Reload(); }
+    }
+    private Task Qualification(string value) { qualification = value; return Reload(); }
+    private Task Reset() { search = qualification = ""; trackFilter = null; return Reload(); }
+    private Task FilterTrack(Guid id) { trackFilter = id; details = null; return Reload(); }
+    public async Task RevealAsync(string? artist = null)
+    {
+        if (artist is not null)
+        {
+            search = artist; searchOpen = true; focusSearch = true;
+            trackFilter = null; qualification = "";
+            await Reload();
+        }
+        else focusHeading = true;
+        if (!disposed) StateHasChanged();
+    }
+    private Task Older() { previous.Push(cursor); cursor = next; return Load(); }
+    private Task Newer() { cursor = previous.Pop(); return Load(); }
+    private async Task Act(Func<Task> action) { try { await action(); feedback = "Playback queue updated."; } catch (Exception e) { error = e.Message; } }
+    private async Task Delete() { if (deleting is not { } selected) return; try { await Playback.DeleteListeningAsync(selected.Id); deleting = details = null; } catch (Exception e) { error = e.Message; } }
+    private sealed record DayRow(ListeningEvent Listen, DateOnly Day, long First, double Milliseconds);
+    private IEnumerable<DayRow> DayRows()
+    {
+        foreach (var listen in rows)
+        {
+            var days = new Dictionary<DateOnly, (long First, double Time)>();
+            foreach (var span in listen.Spans)
+            {
+                var start = Math.Max(loadedFrom, span.Start); var end = Math.Min(loadedTo, span.End);
+                while (start < end)
+                {
+                    var day = ListeningPeriods.Day(start, TimeZoneInfo.Local); var boundary = Math.Min(end, ListeningPeriods.Boundary(day.AddDays(1), TimeZoneInfo.Local));
+                    if (boundary <= start) break;
+                    var old = days.GetValueOrDefault(day, (First: start, Time: 0d)); days[day] = (Math.Min(old.First, start), old.Time + ListeningAggregation.Overlap(span, start, boundary)); start = boundary;
+                }
+            }
+            foreach (var (day, value) in days) yield return new(listen, day, value.First, value.Time);
+        }
+    }
+    private static DateTimeOffset Local(long value) => TimeZoneInfo.ConvertTime(DateTimeOffset.FromUnixTimeMilliseconds(value), TimeZoneInfo.Local);
+    private static string DayLabel(DateOnly day) => $"{(day == DateOnly.FromDateTime(DateTime.Today) ? "Today · " : day == DateOnly.FromDateTime(DateTime.Today.AddDays(-1)) ? "Yesterday · " : "")}{day:dddd, d MMMM yyyy}";
+    public static string Time(double ms) => ms is > 0 and < 1000 ? "<1s" : ms < 60_000 ? $"{Math.Floor(ms / 1000):0}s" : ms < 3_600_000 ? $"{(int)(ms / 60_000)}m {(int)(ms / 1000) % 60}s" : $"{(int)(ms / 3_600_000)}h {(int)(ms / 60_000) % 60}m";
+    private static string Position(double seconds)
+    {
+        var span = TimeSpan.FromSeconds(Math.Max(0, seconds));
+        return span.TotalHours >= 1 ? $"{(long)span.TotalHours}:{span:mm\\:ss}" : span.ToString(@"m\:ss", CultureInfo.InvariantCulture);
+    }
+    public void Dispose() { disposed = true; lifetime.Cancel(); read?.Cancel(); read?.Dispose(); lifetime.Dispose(); }
+}

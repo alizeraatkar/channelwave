@@ -1,0 +1,79 @@
+@using ChannelWave.Core
+@using System.Globalization
+
+<LibraryDialog @ref="dialog" Open="Open" Title="Music player" Class="full-screen-player" OnClose="OnClose">
+    <HeaderContent>
+        <div class="full-player-context"><span>From your library</span><strong>@Collection</strong></div>
+        @if (Ready) { <AudioOutputPicker /> }
+        @Actions
+    </HeaderContent>
+    <ChildContent>
+        <div class="full-player-layout">
+            <div class="full-player-artwork"><TrackArtwork Track="Track" Offline="SavedOffline" AllowNetwork="AllowArtworkNetwork" Ready="Ready" ColorPlayerBackground="true" /></div>
+            <div class="full-player-controls">
+                <div class="full-player-titlebar"><div><h3 dir="auto">@Track.Title</h3><p><MusicCreditLink Track="Track" /></p>@if (!string.IsNullOrWhiteSpace(Track.EmbeddedMetadata?.Album)) { <p class="full-player-album"><MusicCreditLink Track="Track" Kind="albums" /></p> }</div>
+                    @if (Connected) { <button class="music-icon-button @(Track.Favorite ? "music-favorited" : "")" aria-label="@(Track.Favorite ? "Remove favorite" : "Favorite track")" aria-pressed="@Track.Favorite.ToString().ToLowerInvariant()" disabled="@Busy" @onclick="OnFavorite">@if (FavoritePending) { <LoadingIndicator Decorative="true" /> } else { <MusicIcon Name="heart" /> }</button> }
+                </div>
+                @if (Preparing || PendingAction is not null || !string.IsNullOrEmpty(Status)) { <p class="full-player-status" role="status">@if (Preparing || PendingAction is not null) { <LoadingIndicator Decorative="true" /> }@(PendingAction ?? Status)</p> }
+                @if (OtherPlaying is not null) { <p class="full-player-other">Currently playing: <bdi dir="auto">@OtherPlaying</bdi></p> }
+                @if (Track.Origin.Protected) { <p class="music-track-note">This source restricts saving. Stream and download are unavailable in this client.</p> }
+                <MusicSeekbar MediaKey="@($"{Track.Origin.AccountId}:{Track.Id}")" Position="Position" Duration="Duration" Buffered="Buffered" IsPlaying="Playing" IsPreparing="Preparing" Disabled="@(!CanSeek)" OnSeek="OnSeek" />
+                <div class="full-player-queue-controls">@QueueControls</div>
+                <div class="full-player-transport">
+                    <button class="music-icon-button" aria-label="Previous track" disabled="@(!HasPrevious)" @onclick="OnPrevious"><MusicIcon Name="previous" /></button>
+                    <button class="full-player-toggle" aria-label="@(Preparing ? "Cancel stream" : Playing ? "Pause playback" : Ready ? "Resume playback" : "Play song")" disabled="@PlayDisabled" @onclick="OnToggle"><MusicIcon Name="@(Preparing ? "stop" : Playing ? "pause" : "play")" /></button>
+                    <button class="music-icon-button" aria-label="Next track" disabled="@(!HasNext)" @onclick="OnNext"><MusicIcon Name="next" /></button>
+                </div>
+                <div class="full-player-volume"><ListeningIconButton Icon='@(Muted ? "mute" : "volume")' Label='@(Muted ? "Unmute playback" : "Mute playback")' OnClick="OnMute" /><input type="range" aria-label="Volume" min="0" max="1" step="0.01" value="@Volume.ToString(CultureInfo.InvariantCulture)" disabled="@(!Ready)" @oninput="ChangeVolumeAsync" /></div>
+                @if (Error is not null) { <div class="full-player-error" role="alert">@Error<ListeningIconButton Icon="retry" Label="Retry playback" OnClick="OnRetry" /></div> }
+                @if (ActionError is not null) { <p class="music-error" role="alert">@ActionError</p> }
+                @if (Feedback is not null) { <p class="music-feedback" role="status">@Feedback</p> }
+            </div>
+        </div>
+        <footer class="full-player-source"><div><MusicIcon Name="source" /><span><strong dir="auto">@Track.Origin.SourceName</strong><small>Telegram source</small></span></div><span>@FileDetails</span></footer>
+    </ChildContent>
+</LibraryDialog>
+
+@code {
+    [Parameter, EditorRequired] public Track Track { get; set; } = null!;
+    [Parameter] public bool Open { get; set; }
+    [Parameter] public string Collection { get; set; } = "All tracks";
+    [Parameter] public bool SavedOffline { get; set; }
+    [Parameter] public bool AllowArtworkNetwork { get; set; }
+    [Parameter] public bool Ready { get; set; }
+    [Parameter] public bool Connected { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public bool FavoritePending { get; set; }
+    [Parameter] public string? PendingAction { get; set; }
+    [Parameter] public bool Playing { get; set; }
+    [Parameter] public bool Preparing { get; set; }
+    [Parameter] public bool PlayDisabled { get; set; }
+    [Parameter] public bool CanSeek { get; set; }
+    [Parameter] public bool HasPrevious { get; set; }
+    [Parameter] public bool HasNext { get; set; }
+    [Parameter] public double Position { get; set; }
+    [Parameter] public double Duration { get; set; }
+    [Parameter] public double Buffered { get; set; }
+    [Parameter] public double Volume { get; set; }
+    [Parameter] public bool Muted { get; set; }
+    [Parameter] public EventCallback OnMute { get; set; }
+    [Parameter] public string Status { get; set; } = "Ready to play";
+    [Parameter] public string? OtherPlaying { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public string? ActionError { get; set; }
+    [Parameter] public string? Feedback { get; set; }
+    [Parameter] public string FileDetails { get; set; } = "";
+    [Parameter] public RenderFragment? Actions { get; set; }
+    [Parameter] public RenderFragment? QueueControls { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback OnToggle { get; set; }
+    [Parameter] public EventCallback OnPrevious { get; set; }
+    [Parameter] public EventCallback OnNext { get; set; }
+    [Parameter] public EventCallback OnRetry { get; set; }
+    [Parameter] public EventCallback OnFavorite { get; set; }
+    [Parameter] public EventCallback<double> OnSeek { get; set; }
+    [Parameter] public EventCallback<double> OnVolume { get; set; }
+    private LibraryDialog? dialog;
+    public Task CloseAsync() => dialog?.CloseAsync() ?? Task.CompletedTask;
+    private Task ChangeVolumeAsync(ChangeEventArgs args) => double.TryParse(args.Value?.ToString(), CultureInfo.InvariantCulture, out var value) ? OnVolume.InvokeAsync(value) : Task.CompletedTask;
+}

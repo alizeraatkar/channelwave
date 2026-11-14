@@ -1,0 +1,185 @@
+@using ChannelWave.Core
+@implements IDisposable
+@inject PlaybackCoordinator Playback
+
+<button class="music-icon-button audio-output-trigger @(Playback.ActiveOutput.Id.Length > 0 ? "audio-output-active" : "")"
+        type="button" title="@Label" aria-label="@Label" aria-haspopup="dialog" @onclick="OpenAsync">
+    <MusicIcon Name="output" />
+</button>
+<LibraryDialog Open="open" Title="Play on…" Class="audio-output-dialog" OnClose="Close">
+    <p role="status">Current output <strong dir="auto">@Playback.ActiveOutput.Name</strong></p>
+    @if (error is not null)
+    {
+        <p class="music-error" role="alert">@error</p>
+    }
+    @if (busy)
+    {
+        <p role="status">@(outputs is null ? "Finding audio outputs…" : "Changing audio output…")</p>
+    }
+    @if (outputs is not null)
+    {
+        @if (outputs.GroupAndroidOutputs)
+        {
+            <section aria-labelledby="@($"{sectionId}-local")">
+                <h3 id="@($"{sectionId}-local")">On this device</h3>
+                <div class="audio-output-list">
+                    @foreach (var device in outputs.Devices.Where(device => !device.Remote && !device.Bluetooth))
+                    {
+                        @OutputButton(device)
+                    }
+                </div>
+            </section>
+            <section aria-labelledby="@($"{sectionId}-bluetooth")">
+                <h3 id="@($"{sectionId}-bluetooth")">Bluetooth</h3>
+                <div class="audio-output-list">
+                    @foreach (var device in outputs.Devices.Where(device => device.Bluetooth && !device.Remote))
+                    {
+                        @OutputButton(device)
+                    }
+                </div>
+                @if (!outputs.Devices.Any(device => device.Bluetooth && !device.Remote))
+                {
+                    <p class="muted">No Bluetooth audio devices connected.</p>
+                }
+            </section>
+            <section aria-labelledby="@($"{sectionId}-cast")">
+                <h3 id="@($"{sectionId}-cast")">Google Cast</h3>
+                <div class="audio-output-list">
+                    @foreach (var device in outputs.Devices.Where(device => device.Remote))
+                    {
+                        @OutputButton(device)
+                    }
+                    @StopCastingButton
+                </div>
+                @if (!outputs.Devices.Any(device => device.Remote) && outputs.Help is { } castHelp)
+                {
+                    <p class="muted">No Cast devices found. @castHelp</p>
+                }
+            </section>
+        }
+        else
+        {
+            <div class="audio-output-list">
+                @foreach (var device in outputs.Devices)
+                {
+                    @OutputButton(device)
+                }
+                @if (outputs.Picker is { } picker)
+                {
+                    <button type="button" class="outline-button" disabled="@busy" @onclick="() => SelectAsync(null)">@picker</button>
+                }
+                @StopCastingButton
+            </div>
+            @if (outputs.Help is { } help) { <p class="muted">@help</p> }
+        }
+    }
+    <button type="button" class="outline-button" disabled="@busy" @onclick="RefreshAsync">Refresh devices</button>
+</LibraryDialog>
+
+@code {
+    private readonly CancellationTokenSource lifetime = new();
+    private readonly string sectionId = $"audio-output-{Guid.NewGuid():N}";
+    private CancellationTokenSource? scan;
+    private AudioOutputs? outputs;
+    private string? error;
+    private bool open, busy, disposed;
+    private int revision;
+    private string Label => $"Play on… Current output: {Playback.ActiveOutput.Name}";
+
+    protected override void OnInitialized() => Playback.OutputChanged += OnOutputChanged;
+    private void OnOutputChanged() => _ = InvokeAsync(() => { if (!disposed) StateHasChanged(); });
+
+    private RenderFragment OutputButton(AudioOutput device) =>
+        @<button @key="device.Id" type="button" class="outline-button" disabled="@busy"
+                 aria-pressed="@(Playback.ActiveOutput.Id == device.Id ? "true" : "false")"
+                 @onclick="() => SelectAsync(device.Id)">
+            <bdi>@device.Name</bdi>
+            @if (Playback.ActiveOutput.Id == device.Id) { <span>Selected</span> }
+        </button>;
+
+    private RenderFragment StopCastingButton =>
+        @<text>
+            @if (Playback.ActiveOutput.Remote && outputs?.Devices.Any(device => device.Id.Length == 0) == true)
+            {
+                <button type="button" class="outline-button" disabled="@busy" @onclick="StopCastingAsync">Stop casting</button>
+            }
+        </text>;
+
+    private async Task OpenAsync()
+    {
+        if (open) return;
+        open = true;
+        await RefreshAsync();
+        if (open && !disposed && scan is null && outputs?.GroupAndroidOutputs == true)
+        {
+            scan = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+            _ = ScanWhileOpenAsync(scan.Token);
+        }
+    }
+
+    private async Task ScanWhileOpenAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+            {
+                if (busy) continue;
+                var before = revision;
+                AudioOutputs latest;
+                try { latest = await Playback.GetOutputsAsync(ct); }
+                catch (IOException) { continue; }
+                if (ct.IsCancellationRequested || busy || before != revision) continue;
+                if (outputs is { } current && current.Active == latest.Active &&
+                    current.Help == latest.Help && current.Devices.SequenceEqual(latest.Devices)) continue;
+                outputs = latest;
+                StateHasChanged();
+            }
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+    }
+
+    private void Close()
+    {
+        open = false;
+        scan?.Cancel();
+        scan?.Dispose();
+        scan = null;
+    }
+    private Task RefreshAsync() => RunAsync(async () => outputs = await Playback.GetOutputsAsync(lifetime.Token));
+    private Task SelectAsync(string? id) => RunAsync(async () =>
+    {
+        try { await Playback.SelectOutputAsync(id, lifetime.Token); }
+        catch (IOException e) when (outputs?.GroupAndroidOutputs == true)
+        {
+            error = e.Message.Split('\n')[0];
+        }
+        outputs = await Playback.GetOutputsAsync(lifetime.Token);
+    });
+    private Task StopCastingAsync() => RunAsync(async () =>
+    {
+        await Playback.SelectOutputAsync(AudioOutput.Default.Id, lifetime.Token, stopCasting: true);
+        outputs = await Playback.GetOutputsAsync(lifetime.Token);
+    });
+
+    private async Task RunAsync(Func<Task> action)
+    {
+        if (busy || disposed) return;
+        revision++;
+        busy = true;
+        error = null;
+        try { await action(); }
+        catch (OperationCanceledException) when (disposed) { }
+        catch (Exception e) { error = e.Message.Split('\n')[0]; }
+        finally { busy = false; }
+    }
+
+    public void Dispose()
+    {
+        disposed = true;
+        Close();
+        Playback.OutputChanged -= OnOutputChanged;
+        lifetime.Cancel();
+        lifetime.Dispose();
+    }
+}

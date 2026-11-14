@@ -1,0 +1,31 @@
+@using ChannelWave.Core
+@implements IDisposable
+@inject PlaybackCoordinator Playback
+
+@ChildContent
+
+@code {
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public Action<AudioState?>? StateReceived { get; set; }
+    [Parameter] public Action<Exception>? ErrorReceived { get; set; }
+    [Parameter] public EventCallback StatusChanged { get; set; }
+    private AudioState? previous;
+    private bool disposed;
+    protected override void OnInitialized() { Playback.Observed += Receive; Playback.Changed += Changed; }
+    private void Changed()
+    {
+        if (Playback.RestoredPaused) Receive(new(Playback.Queue.Position, Playback.CurrentTrack?.Duration ?? 0, 0, true, false, Playback.OutputVolume));
+    }
+    private void Receive(AudioState? state)
+    {
+        if (disposed || state == previous) return;
+        var status = previous?.Paused != state?.Paused || previous?.Ended != state?.Ended || previous?.Error != state?.Error;
+        previous = state;
+        _ = InvokeAsync(async () =>
+        {
+            if (disposed) return;
+            StateReceived?.Invoke(state); if (status) await StatusChanged.InvokeAsync(); StateHasChanged();
+        });
+    }
+    public void Dispose() { disposed = true; Playback.Observed -= Receive; Playback.Changed -= Changed; }
+}

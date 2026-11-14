@@ -1,0 +1,13 @@
+@using ChannelWave.Core
+<section class="listening-widget" aria-labelledby="overview-title">
+    <h2 id="overview-title">Overview</h2>
+    <dl class="listening-metrics">
+        <div><dt>Listening time</dt><dd>@ListeningHistory.Time(Data?.Milliseconds ?? 0)</dd></div>
+        <div><dt>Qualified plays</dt><dd>@(Data?.Plays ?? 0)</dd></div>
+        <div><dt>Unique tracks</dt><dd>@(Data?.Tracks ?? 0)</dd></div>
+        <div><dt>Artist credits</dt><dd>@(Data?.Artists ?? 0)</dd></div>
+    </dl>
+</section>
+@code {
+    [Parameter] public ListeningStatistics? Data { get; set; }
+}

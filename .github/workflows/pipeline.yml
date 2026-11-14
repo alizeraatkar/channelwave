@@ -1,0 +1,174 @@
+name: ChannelWave pipeline
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      recovery-tag:
+        description: 'Existing reserved beta tag to recover; empty validates only'
+        required: false
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.ref == 'refs/heads/main' && 'channelwave-main-release' || format('channelwave-checks-{0}-{1}', github.event_name, github.ref) }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  queue: ${{ github.ref == 'refs/heads/main' && 'max' || 'single' }}
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { persist-credentials: false }
+      - id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_TAG: ${{ inputs.recovery-tag }}
+        run: |
+          args=()
+          if [[ -n "$RECOVERY_TAG" ]]; then args+=(--recover-tag "$RECOVERY_TAG"); fi
+          python3 scripts/release.py resolve "${args[@]}"
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ steps.resolve.outputs.sha }}', persist-credentials: false }
+      - name: Platform readiness (disabled targets remain pending setup)
+        run: python3 scripts/release.py config >> "$GITHUB_STEP_SUMMARY"
+  checks:
+    needs: source
+    uses: ./.github/workflows/checks.yml
+    with: { sha: '${{ needs.source.outputs.sha }}' }
+  reserve:
+    if: vars.CHANNELWAVE_ENABLE_RELEASES == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.recovery-tag != '')
+    needs: [checks, source]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    outputs:
+      version: ${{ steps.reserve.outputs.version }}
+      build-number: ${{ steps.reserve.outputs.build-number }}
+      base-version: ${{ steps.reserve.outputs.base-version }}
+      published: ${{ steps.reserve.outputs.published }}
+      android: ${{ steps.config.outputs.android }}
+      windows: ${{ steps.config.outputs.windows }}
+      linux: ${{ steps.config.outputs.linux }}
+      macos: ${{ steps.config.outputs.macos }}
+      ios: ${{ steps.config.outputs.ios }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ needs.source.outputs.sha }}', persist-credentials: false }
+      - id: config
+        run: python3 scripts/release.py config
+      - id: reserve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RECOVERY_TAG: ${{ inputs.recovery-tag }}
+        run: |
+          args=()
+          if [[ -n "$RECOVERY_TAG" ]]; then args+=(--recover-tag "$RECOVERY_TAG"); fi
+          python3 scripts/release.py reserve --sha '${{ needs.source.outputs.sha }}' "${args[@]}"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: reservation
+          overwrite: true
+          path: artifacts/reservation.json
+          if-no-files-found: error
+          retention-days: 30
+  android:
+    needs: [reserve, source]
+    if: needs.reserve.outputs.android == 'true' && needs.reserve.outputs.published != 'true'
+    uses: ./.github/workflows/android-release.yml
+    with:
+      sha: ${{ needs.source.outputs.sha }}
+      version: ${{ needs.reserve.outputs.version }}
+      build-number: ${{ needs.reserve.outputs.build-number }}
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+      TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+  desktop:
+    needs: [reserve, source]
+    if: needs.reserve.outputs.published != 'true'
+    uses: ./.github/workflows/desktop-release.yml
+    with:
+      sha: ${{ needs.source.outputs.sha }}
+      version: ${{ needs.reserve.outputs.version }}
+      build-number: ${{ needs.reserve.outputs.build-number }}
+      windows: ${{ needs.reserve.outputs.windows == 'true' }}
+      linux: ${{ needs.reserve.outputs.linux == 'true' }}
+    secrets:
+      TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+      TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+  apple:
+    needs: [reserve, source]
+    if: (needs.reserve.outputs.macos == 'true' || needs.reserve.outputs.ios == 'true') && needs.reserve.outputs.published != 'true'
+    uses: ./.github/workflows/apple-release.yml
+    with:
+      sha: ${{ needs.source.outputs.sha }}
+      version: ${{ needs.reserve.outputs.version }}
+      base-version: ${{ needs.reserve.outputs.base-version }}
+      build-number: ${{ needs.reserve.outputs.build-number }}
+      macos: ${{ needs.reserve.outputs.macos == 'true' }}
+      ios: ${{ needs.reserve.outputs.ios == 'true' }}
+    secrets:
+      APPLE_CERTIFICATES_BASE64: ${{ secrets.APPLE_CERTIFICATES_BASE64 }}
+      APPLE_CERTIFICATES_PASSWORD: ${{ secrets.APPLE_CERTIFICATES_PASSWORD }}
+      APPLE_PROFILES_BASE64: ${{ secrets.APPLE_PROFILES_BASE64 }}
+      ASC_KEY_BASE64: ${{ secrets.ASC_KEY_BASE64 }}
+      ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+      ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+      TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+      TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+  publish:
+    if: always() && needs.reserve.result == 'success'
+    needs: [checks, reserve, source, android, desktop, apple]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Enforce enabled platform results
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          n = json.loads(os.environ['RESULTS']); p = n['reserve']['outputs']
+          required = ['checks', 'reserve', 'source']
+          if p['published'] != 'true':
+              required.append('desktop')
+              if p['android'] == 'true': required.append('android')
+              if p['macos'] == 'true' or p['ios'] == 'true': required.append('apple')
+          assert all(n[j]['result'] == 'success' for j in required), n
+          PY
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ needs.source.outputs.sha }}', persist-credentials: false }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: reservation
+          path: artifacts
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: needs.reserve.outputs.published != 'true'
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: artifacts/release
+      - name: Verify and publish the complete beta
+        if: needs.reserve.outputs.published != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release.py publish
+      - name: Verify existing immutable beta (rerun)
+        if: needs.reserve.outputs.published == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/release.py verify-published
+      - name: Platform status
+        if: always()
+        run: python3 scripts/release.py config >> "$GITHUB_STEP_SUMMARY"

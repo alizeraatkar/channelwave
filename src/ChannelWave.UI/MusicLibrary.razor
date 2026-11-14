@@ -1,0 +1,559 @@
+@using ChannelWave.Core
+@using ChannelWave.Telegram
+@using System.Globalization
+@implements IAsyncDisposable
+@inject TelegramSession Session
+@inject IRuntimeHost Host
+@inject PlaybackCoordinator Playback
+@inject ArtworkCoordinator Artwork
+@inject PlaybackMediaResolver Media
+@inject TransferManager Transfers
+
+@if (ShowTransferSummary && ActiveTransfer is { } transfer)
+{
+    var progress = Transfers.Progress(transfer.Id);
+    <section class="music-transfer" aria-label="Active transfer">
+        <div class="music-transfer-details"><strong dir="auto">@transfer.Track.Title</strong><span role="status">@(progress.Phase ?? (transfer.State == TransferState.Waiting ? transfer.Error : transfer.State == TransferState.Exporting ? "Preparing export" : transfer.Purpose == TransferPurpose.Offline ? "Saving offline" : "Downloading")) @if (progress.Total > 0) { <text>@Size(progress.Bytes) of @Size(progress.Total)</text> }</span></div>
+        <button class="outline-button" @onclick="() => Transfers.CancelAsync(transfer.Id)">Cancel download</button>
+        @if (progress.Total > 0) { <progress aria-label="Download progress" max="@progress.Total" value="@progress.Bytes"></progress> }
+        else { <progress aria-label="Download progress"></progress> }
+    </section>
+}
+
+<section class="music-library @(current is not null ? "music-has-player" : "")" aria-label="Local library">
+    <div hidden="@(!ShowContent)" class="music-content @(Display == CollectionDisplay.Grid ? "tracks-grid" : "")">
+    <div class="music-heading @(View == "favorites" ? "favorites-heading" : View == "playlist" ? "playlist-heading" : "")">
+        <div><h1 dir="auto">@(CollectionLabel ?? (SearchMode ? "Find your next listen." : View == "offline" ? "Offline" : View == "favorites" ? "Liked Songs" : View == "playlist" ? Playlist.Name : "Your music"))</h1><span class="music-count">@if (IsLoading) { <span>Updating your music</span> } else if (BrowseSummary is not null) { <span>@BrowseSummary</span> } else { <span>@(View == "playlist" ? Playlist.Tracks.Length : Visible.Count()) @(View == "playlist" ? "songs in playlist" : Visible.Count() == 1 ? "track" : "tracks")</span> } · @(View == "offline" ? "Saved on this device" : "From your sources")</span></div>
+        <button class="subtle-button" @onclick="OnChannels">Manage sources<MusicIcon Name="arrow" /></button>
+    </div>
+    <div class="collection-actions">
+        <CollectionDisplayToggle Value="Display" ValueChanged="OnDisplay" />
+        <button class="subtle-button" @onclick="OnSaveFilter"><MusicIcon Name="filters" />Save filter</button>
+        @if (CanPinCollection) { <button class="subtle-button" @onclick="OnPinCollection"><MusicIcon Name="pin" />Add to Home tabs</button> }
+    </div>
+    @if (View == "offline")
+    {
+        <div class="offline-toolbar"><span>@(Session.AccountId is null ? "You’re disconnected. Saved songs can still play." : "Your saved music is ready.")</span><button class="subtle-button" @onclick="OnDownloads">View downloads <MusicIcon Name="arrow" /></button></div>
+    }
+    @if (View == "playlist")
+    {
+        <PlaylistManager Playlists="Playlists" Current="Playlist" Busy="@(Busy || savingPlaylistEdit)" Sort="PlaylistSort" OnSelect="OnPlaylistSelect" OnEdit="OnPlaylistEdit" OnSort="OnPlaylistSort" />
+    }
+    @BrowseTools
+    <LibrarySearchControls @ref="searchControls" Value="Criteria" ValueChanged="Search" Label='@(View == "playlist" ? "Search this playlist" : "Search your indexed library")' Sources="Sources" Source="@channel" SourceChanged="SelectChannelAsync" ClearAllFilters="ClearAdvancedFiltersAsync" Enabled="ShowContent" Searching="IsLoading" Context='@($"{Session.AccountId}:{DialogContext}")'>
+        <CollectionTabs>
+        <div class="music-tabs" role="group" aria-label="Filter music">
+            <button aria-pressed="@(View == "all" ? "true" : "false")" @onclick='() => ViewChanged.InvokeAsync("all")'>All tracks</button>
+            <button aria-pressed="@(View == "favorites" ? "true" : "false")" @onclick='() => ViewChanged.InvokeAsync("favorites")'><MusicIcon Name="heart" /> Liked Songs</button>
+            <button aria-pressed="@(View == "playlist" ? "true" : "false")" @onclick='() => ViewChanged.InvokeAsync("playlist")'><MusicIcon Name="list" /> @Playlist.Name <span class="music-tab-count">@Playlist.Tracks.Length</span></button>
+            @if (Host.CanSaveOffline) { <button aria-pressed='@(View == "offline" ? "true" : "false")' @onclick='() => ViewChanged.InvokeAsync("offline")'><MusicIcon Name="download" />Offline</button> }
+        </div>
+        </CollectionTabs>
+        <ExtraActions>
+            <ListeningIconButton Icon="history" Label="Open listening activity" OnClick="OnActivity" />
+            @if (Session.AccountId is not null && View is not ("offline" or "playlist"))
+            {
+                <button class="music-icon-button" aria-label="@(selecting ? "Done selecting" : "Select tracks")" title="@(selecting ? "Done selecting" : "Select tracks")" aria-pressed="@selecting.ToString().ToLowerInvariant()" disabled="@(Busy || IsLoading)" @onclick="ToggleSelection"><MusicIcon Name="select" /></button>
+            }
+        </ExtraActions>
+    </LibrarySearchControls>
+    @if (Session.AccountId is not null && View != "offline")
+    {
+        @if (View == "playlist")
+        {
+            <div class="playlist-track-toolbar">
+                @if (!selecting)
+                {
+                    <button class="primary-button" disabled="@(Busy || IsLoading || loadingPlaylist || Playlist.Tracks.Length == 0)" @onclick="() => PlayPlaylist(false)"><MusicIcon Name="play" />@(loadingPlaylist ? "Preparing…" : "Play playlist")</button>
+                    <button class="outline-button" disabled="@(Busy || IsLoading || loadingPlaylist || Playlist.Tracks.Length == 0)" @onclick="() => PlayPlaylist(true)">Shuffle play</button>
+                    @if (Host.CanSaveOffline) { <button class="outline-button" disabled="@(Busy || IsLoading || Playlist.Tracks.Length == 0)" title="Save these songs once; future playlist edits will not download automatically" @onclick="SavePlaylistOffline"><MusicIcon Name="download" />Save current songs offline</button> }
+                }
+                @if (Playlist.Tracks.Length == 0) { <button class="outline-button" @onclick='() => ViewChanged.InvokeAsync("all")'>Find songs to add</button> }
+                <button class="subtle-button" aria-pressed="@selecting.ToString().ToLowerInvariant()" disabled="@(Busy || IsLoading)" @onclick="ToggleSelection">@(selecting ? "Done selecting" : "Organize tracks")</button>
+            </div>
+        }
+        @if (selecting)
+        {
+            <div class="playlist-selection" aria-label="Selected track actions">
+                <span role="status">@selectedTracks.Count selected</span>
+                <button disabled="@(Busy || !Visible.Any())" aria-label="Select shown tracks" @onclick="SelectShown">Select shown</button>
+                @if (selectedTracks.Count > 0) { <button disabled="@Busy" aria-label="Clear selection" @onclick="() => selectedTracks.Clear()">Clear</button> }
+                <div class="playlist-bulk-actions">
+                    <button disabled="@(Busy || selectedTracks.Count == 0)" aria-label="Add selected to playlist" @onclick="() => ChoosePlaylists(null)">Add to playlist</button>
+                    @if (View == "playlist") { <button disabled="@(Busy || savingPlaylistEdit || selectedTracks.Count == 0)" aria-label="Remove selected" @onclick="RemoveSelected">Remove selected</button> }
+                </div>
+                @if (View == "playlist" && (PlaylistSort != PlaylistSort.Custom || Criteria.IsActive || channel.Length > 0)) { <p>Use Custom order and clear search and source filters to reorder.</p> }
+            </div>
+        }
+    }
+    @if (feedback is not null) { <p class="music-feedback" role="status">@feedback</p> }
+    @if (actionError is not null) { <p class="music-error" role="alert">@actionError</p> }
+    <p class="search-result-summary" role="status" aria-live="polite" aria-atomic="true">@if (!IsLoading && LoadError is null && (Criteria.IsActive || channel.Length > 0)) { <span>@Visible.Count() @(Visible.Count() == 1 ? "match" : "matches") shown@(CanLoadMore ? ". More available." : ".")</span> }</p>
+    @if (BrowseResults is not null) { @if (IsLoading) { <LoadingIndicator Label="Loading your library…" /> } @if (LoadError is not null) { <div class="music-error" role="alert">@LoadError <button @onclick="OnRetry">Retry loading music</button></div> } @BrowseResults }
+    <div hidden="@(BrowseResults is not null)">
+    <div class="music-list-heading" aria-hidden="true"><span>TRACK / ARTIST</span><span>SOURCE</span><span>DURATION</span><span>LISTEN / SAVE</span></div>
+    <div class="library-loading-status">
+        @if (IsLoading) { <LoadingIndicator Label='@(LoadState == LibraryLoadState.LoadingMore ? "Loading more tracks…" : SearchMode ? "Searching your music…" : "Loading your music…")' /> }
+    </div>
+    @if (LoadError is not null && !LoadMoreFailed) { <div class="music-error" role="alert"><p>Couldn't load your music. @LoadError</p><button disabled="@IsLoading" @onclick="OnRetry">Retry loading music</button></div> }
+    @if (savingList) { <LoadingIndicator Label="Saving your listening list…" /> }
+    @if (savingFavorite is not null) { <LoadingIndicator Label="Saving favorite…" /> }
+    <div class="music-results" aria-busy="@(IsLoading ? "true" : "false")">
+    <TrackViewport Grid="@(Display == CollectionDisplay.Grid)" Items="Tracks" Version="ListVersion" Context="ViewportContext" Enabled="ShowContent" CanLoadMore="CanLoadMore" Loading="@(LoadState != LibraryLoadState.Idle || Busy)" HasError="@(LoadError is not null)" OnLoadMore="OnLoadMore">
+        <RowTemplate Context="track">
+        @{
+            var selected = IsCurrent(track);
+            var savedOffline = IsSaved(track);
+            var offlineCopy = OfflineCopies.FirstOrDefault(c => c.Track.Id == track.Id && c.Track.Origin.AccountId == track.Origin.AccountId);
+            var downloading = downloadingTrack?.Id == track.Id;
+            var playing = selected && Playback.IsPlaying;
+        }
+            <article @key="(track.Origin.AccountId, track.Id)" data-track-key="@($"{track.Origin.AccountId}:{track.Id}")" class="music-track track @(selected ? "music-track-selected" : "")" aria-label="@($"{track.Title} by {track.Performer}")">
+                <div class="music-track-open"><button class="music-artwork-open" aria-label="@($"View artwork and player for {track.Title}")" @onclick="() => OpenPreview(track)">
+                <TrackArtwork Track="track" Offline="savedOffline" AllowNetwork="@(Session.AccountId == track.Origin.AccountId && !Busy && !savedOffline && View != "offline")" />
+                </button><span class="music-track-title"><strong dir="auto"><button class="music-title-link" aria-label="@($"Open player for {track.Title}")" @onclick="() => OpenPreview(track)">@track.Title</button></strong><MusicCreditLink Track="track" Class="music-artist" />
+                    @if (!string.IsNullOrWhiteSpace(track.EmbeddedMetadata?.Album)) { <MusicCreditLink Track="track" Kind="albums" Class="music-artist music-album" /> }
+                    @if (selected && !Playback.RestoredPaused) { <span class="music-row-status" role="status">@if (buffering) { <LoadingIndicator Decorative="true" /> }@(buffering ? "Buffering audio…" : playError is not null ? Playback.CanResume && audio?.Error is null ? "Ready to resume" : "Playback stopped" : Playback.IsPlaying ? "Now playing"
+        : audio?.Ended == true ? "Finished" : "Paused")</span> }
+                </span></div>
+                <div class="music-track-details"><button class="music-source" title="Show tracks from this source" @onclick="() => FilterSource(track.Origin.ChatId)"><span><small>Source</small><bdi dir="auto">@track.Origin.SourceName</bdi><span class="music-file-details">@Time(track.Duration)</span></span></button></div>
+                <span class="music-track-duration">@Time(track.Duration)</span>
+                <TrackActions Track="track" Enabled="@ShowContent" Context="@DialogContext" Connected="@(Session.AccountId is not null)" Busy="Busy" CanSaveOffline="@Host.CanSaveOffline" SavedOffline="savedOffline" Playing="playing" Preparing="@(selected && buffering)" FavoritePending="@(savingFavorite == track.Id)" InList="@playlistMembership.Contains(track.Id)" ListName="@Playlist.Name"
+                    ListenLabel="@(selected && buffering ? "Buffering…" : playing ? "Pause" : selected && Playback.CanResume ? "Resume" : savedOffline ? "Play" : Host.CanStream ? "Stream" : "Play")"
+                    ListenDisabled="@(offlineCopy is { Health: not OfflineHealth.Saved } || Busy || track.Origin.Protected || !track.Available && !savedOffline || selected && buffering || downloading)"
+                    EditDisabled="@(Busy || downloadingTrack is not null)"
+                    OfflineDisabled="@(Busy || track.Origin.Protected || !savedOffline && (Session.AccountId is null || selected && HasActiveMedia))"
+                    DownloadDisabled="@(Busy || Session.AccountId is null || track.Origin.Protected || selected && HasActiveMedia)"
+                    ListDisabled="@(Busy || savingList || Session.AccountId is null)"
+                    OnListen="Listen" OnFavorite="FavoriteAsync" OnOffline="ToggleOfflineAsync" OnDownload="DownloadAsync" OnAdd="Add" OnEdit="EditAsync" OnChoosePlaylist="ChoosePlaylist" OnPlayNext="PlayNextAsync" OnEnqueue="EnqueueAsync">
+                    <ExtraActions><button @onclick="() => PinTrack(track)"><MusicIcon Name="pin" />Add to Home tabs</button></ExtraActions>
+                </TrackActions>
+                @if (selecting && View != "offline")
+                {
+                    <div class="playlist-row-organize">
+                        <label><input type="checkbox" checked="@selectedTracks.Contains(track.Id)" disabled="@Busy" @onchange="() => SelectTrack(track.Id)" aria-label="@($"Select {track.Title}")" />Select song</label>
+                        @if (View == "playlist")
+                        {
+                            <button class="music-icon-button" aria-label="@($"Move {track.Title} up")" disabled="@(Busy || savingPlaylistEdit || !CanMove(track, -1))" @onclick="() => MoveTrack(track, -1)"><MusicIcon Name="up" /></button>
+                            <button class="music-icon-button" aria-label="@($"Move {track.Title} down")" disabled="@(Busy || savingPlaylistEdit || !CanMove(track, 1))" @onclick="() => MoveTrack(track, 1)"><MusicIcon Name="down" /></button>
+                        }
+                    </div>
+                }
+                @if (track.Origin.Protected) { <p class="music-track-note">This source restricts saving. Stream and download are unavailable in this client.</p> }
+                else if (offlineCopy is { Health: not OfflineHealth.Saved }) { <p class="music-track-note music-error">@(offlineCopy.Health == OfflineHealth.Missing ? "Saved copy missing." : "Saved copy damaged.") <button class="subtle-button" disabled="@(Session.AccountId is null || Busy)" @onclick="() => Download(track, true)">Save again</button>@if (Session.AccountId is null) { <span>Reconnect to save again.</span> }</p> }
+                else if (!track.Available) { <p class="music-track-note">Telegram message unavailable.@(savedOffline ? " Your saved copy can still play." : " Kept in your library and playlists.")</p> }
+                else if (selected && HasActiveMedia && Session.AccountId is not null && !savedOffline) { <p class="music-track-note">Stop playback to save another copy of this track.</p> }
+            </article>
+        </RowTemplate>
+    </TrackViewport>
+    @if (LoadError is not null && LoadMoreFailed) { <div class="music-error" role="alert"><p>Couldn't load more music. @LoadError</p><button disabled="@IsLoading" @onclick="OnRetry">Retry loading music</button></div> }
+    @if (IsLoading && (!Visible.Any() || LoadState == LibraryLoadState.LoadingMore)) { <LoadingSkeleton Count="@(LoadState == LibraryLoadState.LoadingMore ? 3 : 6)" /> }
+    @if (!Visible.Any() && !IsLoading && LoadError is null)
+    {
+        <div class="music-empty"><MusicIcon Name="@(View == "favorites" ? "heart" : SearchMode ? "search" : "music")" /><h3>@(HasSearch ? "No matches just yet" : View == "offline" ? "Take your music with you" : View == "favorites" ? "Keep the songs you love" : View == "playlist" ? "Make time for a good listen" : "Your next listen starts here")</h3><p>@(HasSearch ? "Try different words or remove a filter to see more music." : View == "offline" ? "Choose Save offline on a song in your library. Come back here to listen without a connection." : View == "favorites" ? "Tap the heart on any song. You'll find it right here." : View == "playlist" ? "Add songs from your library to build your listening list." : "Choose a Telegram source and index its audio to start your collection.")</p>@if (Sources.Count > 0 || HasSearch) { <button class="light-button" @onclick="ResetFilters">Show all tracks</button> } else { <button class="light-button" @onclick="OnChannels">Choose sources</button> }</div>
+    }
+    </div>
+    </div>
+    <div class="music-library-footer"><span>@(View == "offline" ? "Saved on this device. Removing a source or signing out removes its offline copies. Browsers may reclaim site storage." : Host.CanStream ? "Save offline from a song's menu to listen without a connection. Download exports a separate file." : "Play prepares the audio before listening. Download saves a separate file to your device.")</span>@if (CanLoadMore) { <button disabled="@(Busy || IsLoading)" @onclick="OnLoadMore">@(LoadState == LibraryLoadState.LoadingMore ? "Loading more tracks…" : "Load more tracks")</button> }</div>
+    </div>
+    <PlaybackPresenter StateReceived="ReceiveAudioState" ErrorReceived="ReceiveAudioError" StatusChanged="PlaybackStatusChanged">
+    @if (current is not null)
+    {
+        <section class="music-player" aria-label="Now playing">
+            <div class="music-player-identity"><div class="music-player-info"><button class="music-artwork-open" aria-label="Open full-screen player" @onclick="OpenCurrent"><TrackArtwork Track="current" Offline="@IsSaved(current)" AllowNetwork="@(Session.AccountId == current.Origin.AccountId && !Busy && View != "offline")" Ready="Playback.CanResume" ColorPlayerBackground="true" /></button><span><strong dir="auto"><button class="music-title-link" aria-label="Open player for current song" @onclick="OpenCurrent">@current.Title</button></strong><span class="music-player-credits"><MusicCreditLink Track="current" />@if (!string.IsNullOrWhiteSpace(current.EmbeddedMetadata?.Album)) { <span aria-hidden="true"> · </span><MusicCreditLink Track="current" Kind="albums" /> }</span><span class="music-player-source">Source · <bdi dir="auto">@current.Origin.SourceName</bdi></span></span></div>
+                @if (Session.AccountId is not null) { <button class="music-icon-button player-favorite @(current.Favorite ? "music-favorited" : "")" aria-label="@(current.Favorite ? "Remove favorite from current song" : "Favorite current song")" aria-pressed="@current.Favorite.ToString().ToLowerInvariant()" disabled="@Busy" @onclick="() => FavoriteAsync(current)">@if (savingFavorite == current.Id) { <LoadingIndicator Decorative="true" /> } else { <MusicIcon Name="heart" /> }</button> }
+            </div>
+            <div class="music-player-main">
+                <div class="music-transport"><PlaybackModes /><button class="music-icon-button" aria-label="Previous track" title="Previous track" disabled="@(!Playback.HasAdjacent(-1))" @onclick="() => Skip(-1)"><MusicIcon Name="previous" /></button><button class="music-player-toggle" aria-label="@(buffering ? "Cancel stream" : Playback.IsPlaying ? "Pause playback" : "Resume playback")" disabled="@(!buffering && !Playback.CanResume && !Playback.RestoredPaused)" @onclick="Toggle"><MusicIcon Name="@(buffering ? "stop" : Playback.IsPlaying ? "pause" : "play")" /></button><button class="music-icon-button" aria-label="Next track" title="Next track" disabled="@(!Playback.HasAdjacent(1))" @onclick="() => Skip(1)"><MusicIcon Name="next" /></button><button class="music-icon-button" aria-label="Stop playback" title="Stop playback" @onclick="Stop"><MusicIcon Name="stop" /></button></div>
+                <MusicSeekbar MediaKey="@($"{current.Origin.AccountId}:{current.Id}")" Position="@(audio?.Position ?? Playback.Queue.Position)" Duration="Duration" Buffered="@(audio?.Buffered ?? 0)" IsPlaying="Playback.IsPlaying" IsPreparing="buffering" Disabled="@(audio is null || buffering)" Compact="true" OnSeek="SeekAsync" />
+                @if (!string.IsNullOrEmpty(PlaybackStatus)) { <p class="music-player-status" role="status">@if (buffering) { <LoadingIndicator Decorative="true" /> }@PlaybackStatus</p> }
+            </div>
+            <div class="music-volume"><ListeningIconButton Icon='@(Playback.Muted ? "mute" : "volume")' Label='@(Playback.Muted ? "Unmute playback" : "Mute playback")' OnClick="() => Playback.SetMutedAsync(!Playback.Muted)" /><label class="music-sr-only" for="music-volume">Volume</label><input id="music-volume" type="range" min="0" max="1" step="0.01" value="@volume.ToString(CultureInfo.InvariantCulture)" disabled="@(audio is null)" @oninput="Volume" /><button class="music-icon-button" aria-label="Expand player" @onclick="OpenCurrent"><MusicIcon Name="expand" /></button></div>
+            <AudioOutputPicker />
+            <button class="music-icon-button mobile-player-expand" aria-label="Expand player" @onclick="OpenCurrent"><MusicIcon Name="expand" /></button>
+            <button class="music-icon-button player-queue-button" aria-label="Open Up next" title="Up next" @onclick="OpenQueue"><MusicIcon Name="queue" /></button>
+            @if (playError is not null) { <div class="music-player-error" role="alert">@playError <ListeningIconButton Icon="retry" Label='@(Host.CanStream ? "Retry stream" : "Retry playback")' OnClick="() => Start(current, playingOfflineOnly)" /></div> }
+        </section>
+    }
+@if (previewTrack is { } shown)
+{
+    var active = IsCurrent(shown);
+    var saved = IsSaved(shown);
+    <FullScreenPlayer @ref="fullPlayer" Track="shown" Open="true" Collection="@(active && Playback.RestoredPaused ? Playback.Context.Label : previewCollection)" SavedOffline="saved" AllowArtworkNetwork="@(Session.AccountId == shown.Origin.AccountId && !Busy && !previewOfflineOnly)"
+        Connected="@(Session.AccountId is not null)" Busy="Busy" FavoritePending="@(savingFavorite == shown.Id)" PendingAction='@(savingFavorite is not null ? "Saving favorite…" : savingList ? "Saving your listening list…" : null)' Ready="@(active && (Playback.CanResume || Playback.RestoredPaused))" Playing="@(active && Playback.IsPlaying)" Preparing="@(active && buffering)"
+        PlayDisabled="@(shown.Origin.Protected || !shown.Available && !saved || Busy && !active || downloadingTrack?.Id == shown.Id)" CanSeek="@(active && audio is not null && !buffering)"
+        Position="@(active ? audio?.Position ?? Playback.Queue.Position : 0)" Duration="@(active ? Duration : shown.Duration)" Buffered="@(active ? audio?.Buffered ?? 0 : 0)" Volume="volume" Muted="Playback.Muted" OnMute="() => Playback.SetMutedAsync(!Playback.Muted)"
+        Status="@(active ? PlaybackStatus : "Ready to play")" OtherPlaying="@(!active && Playback.IsPlaying ? current?.Title : null)" Error="@(active ? playError : null)" ActionError="@actionError" Feedback="@feedback"
+        HasPrevious="@(active ? Playback.HasAdjacent(-1) : PreviewAdjacent(-1) is not null)" HasNext="@(active ? Playback.HasAdjacent(1) : PreviewAdjacent(1) is not null)" FileDetails="@($"{Format(shown.Media)} · {Size(shown.Media.Size)}")"
+        OnClose="ClosePreview" OnToggle="TogglePreviewAsync" OnPrevious="() => SkipPreviewAsync(-1)" OnNext="() => SkipPreviewAsync(1)" OnSeek="SeekAsync" OnVolume="SetVolumeAsync" OnRetry="RetryPreviewAsync" OnFavorite="() => FavoriteAsync(shown)">
+        <Actions>
+            <TrackActions @key="shown.Id" Track="shown" MenuOnly="true" Context="@($"player:{shown.Id}:{DialogContext}")" Connected="@(Session.AccountId is not null)" Busy="Busy" CanSaveOffline="Host.CanSaveOffline" SavedOffline="saved" InList="@Playlist.Tracks.Contains(shown.Id)" ListName="@Playlist.Name" OnChoosePlaylist="ChoosePlaylist"
+                EditDisabled="@(Busy || downloadingTrack is not null)" OfflineDisabled="@(Busy || shown.Origin.Protected || !saved && (Session.AccountId is null || active && HasActiveMedia))"
+                DownloadDisabled="@(Busy || Session.AccountId is null || shown.Origin.Protected || active && HasActiveMedia)" ListDisabled="@(Busy || savingList || Session.AccountId is null)"
+                OnFavorite="FavoriteAsync" OnOffline="ToggleOfflineAsync" OnDownload="DownloadAsync" OnAdd="Add" OnEdit="EditAsync" OnPlayNext="PlayNextAsync" OnEnqueue="EnqueueAsync">
+                <ExtraActions>@if (active) { <button @onclick="StopPreviewAsync"><MusicIcon Name="stop" />Stop playback</button> }</ExtraActions>
+            </TrackActions>
+        </Actions>
+        <QueueControls><PlaybackModes /><button class="outline-button" @onclick="OpenQueue"><MusicIcon Name="queue" />Up next · @Playback.UpcomingCount</button></QueueControls>
+    </FullScreenPlayer>
+}
+    </PlaybackPresenter>
+</section>
+<QueuePanel Open="queueOpen" OnClose="() => queueOpen = false" />
+@if (current is null && Playback.UpcomingCount > 0)
+{
+    <button class="queued-tracks-button outline-button" @onclick="OpenQueue"><MusicIcon Name="queue" />Up next · @Playback.UpcomingCount</button>
+}
+<LibraryDialog @ref="playlistPicker" Open="@(playlistPickerOpen && (ShowContent || HomeVisible))" Title="Add to playlist" OnClose="ClosePlaylistPicker">
+    <p>@pickerTracks.Length @(pickerTracks.Length == 1 ? "song" : "songs") selected. Choose a playlist.</p>
+    @foreach (var list in Playlists)
+    {
+        var included = pickerTracks.Length > 0 && pickerTracks.All(list.Tracks.Contains);
+        <button class="playlist-destination" disabled="@(Busy || savingPlaylistEdit || included)" @onclick="() => AddToPlaylist(list)"><MusicIcon Name="@(included ? "check" : "plus")" /><span dir="auto">@list.Name</span><span>@(included ? "Already added" : $"{list.Tracks.Length} songs")</span></button>
+    }
+    @if (pickerError is not null) { <p class="music-error" role="alert">@pickerError</p> }
+    <button class="outline-button" disabled="@savingPlaylistEdit" @onclick="ManagePlaylists">Manage playlists</button>
+</LibraryDialog>
+
+
+@if (editingTrack is not null)
+{
+    <MetadataEditor @key="editingTrack.Id" @ref="editor" Track="editingTrack" OfflineAvailable="@IsSaved(editingTrack)" OnClose="CloseEditor" OnMetadataSaved="MetadataSaved" />
+}
+
+@code {
+    [Parameter] public RenderFragment? BrowseTools { get; set; }
+    [Parameter] public RenderFragment? BrowseResults { get; set; }
+    [Parameter] public string BrowseContext { get; set; } = "";
+    [Parameter] public string? BrowseSummary { get; set; }
+    [Parameter] public string? CollectionLabel { get; set; }
+    public void PreviewHomeTrack(Track track) => OpenPreview(track);
+    public void ShowQueue() => OpenQueue();
+    public Task PlayBrowseAsync(bool shuffle) => PlayCollectionAsync(null, View == "offline", shuffle);
+    public async Task CloseMusicDialogsAsync()
+    {
+        await DismissPreviewAsync();
+        if (editor is not null) await editor.CloseAsync();
+        queueOpen = playlistPickerOpen = false;
+    }
+
+    [Parameter] public IReadOnlyList<Track> OfflineTracks { get; set; } = [];
+    [Parameter] public EventCallback OnOfflineChanged { get; set; }
+    [Parameter] public EventCallback OnDownloads { get; set; }
+    [Parameter] public bool ShowTransferSummary { get; set; } = true;
+    [Parameter] public Func<Task<IReadOnlyList<Track>>>? ReadOfflinePlaylist { get; set; }
+    [Parameter] public IReadOnlyList<OfflineCopy> OfflineCopies { get; set; } = [];
+    [Parameter] public EventCallback<Track> OnMetadataChanged { get; set; }
+    [CascadingParameter] public LibraryPresentationStore? Presentation { get; set; }
+    [Parameter] public CollectionDisplay Display { get; set; }
+    [Parameter] public EventCallback<CollectionDisplay> OnDisplay { get; set; }
+    [Parameter] public EventCallback OnSaveFilter { get; set; }
+    [Parameter] public EventCallback OnPinCollection { get; set; }
+    [Parameter] public bool CanPinCollection { get; set; }
+    private async Task PinTrack(Track track)
+    {
+        try { if (Presentation is not null) await Presentation.PinAsync(new(LibraryItemKind.Track, track.Id.ToString(), track.Title)); }
+        catch (Exception e) { actionError = e.Message; }
+    }
+    [Parameter] public bool HomeVisible { get; set; }
+    [Parameter] public bool ShowContent { get; set; } = true;
+    [Parameter] public bool SearchMode { get; set; }
+    [Parameter] public string View { get; set; } = "all";
+    [Parameter] public EventCallback<string> ViewChanged { get; set; }
+    [Parameter] public EventCallback OnChannels { get; set; }
+    [Parameter] public IReadOnlyList<Track> Tracks { get; set; } = [];
+    [Parameter] public IReadOnlyList<Source> Sources { get; set; } = [];
+    [Parameter] public Playlist Playlist { get; set; } = ChannelWave.Core.Playlists.Create("Listening list");
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public LibraryLoadState LoadState { get; set; }
+    [Parameter] public string? LoadError { get; set; }
+    [Parameter] public bool LoadMoreFailed { get; set; }
+    [Parameter] public EventCallback OnRetry { get; set; }
+    private bool IsLoading => LoadState is LibraryLoadState.Refreshing or LibraryLoadState.LoadingMore;
+    private Guid? savingFavorite;
+    [Parameter] public bool CanLoadMore { get; set; }
+    [Parameter] public LibrarySearchCriteria Criteria { get; set; } = new();
+    [Parameter] public EventCallback<LibrarySearchCriteria> OnSearch { get; set; }
+    [Parameter] public EventCallback<LibrarySearchCriteria> OnClearFilters { get; set; }
+    [Parameter] public EventCallback<long?> OnChannel { get; set; }
+    [Parameter] public EventCallback OnLoadMore { get; set; }
+    [Parameter] public EventCallback<Track> OnFavorite { get; set; }
+    [Parameter] public EventCallback<Track> OnAdd { get; set; }
+    private bool HasSearch => Criteria.IsActive || channel.Length > 0 || CollectionLabel is not null;
+    [Parameter] public long? SelectedSource { get; set; }
+    private string channel = "";
+    private LibrarySearchControls? searchControls;
+    private (string View, bool Search, bool Visible)? previousView;
+    protected override async Task OnParametersSetAsync()
+    {
+        channel = SelectedSource?.ToString(CultureInfo.InvariantCulture) ?? "";
+        if (!ReferenceEquals(offlineVersion, OfflineTracks))
+        {
+            offlineVersion = OfflineTracks;
+            offlineMembership = OfflineTracks.Select(t => (t.Origin.AccountId, t.Id)).ToHashSet();
+        }
+        var nextView = (View, SearchMode, ShowContent);
+        ResetPlaylistContext();
+        if (previousView != nextView)
+        {
+            feedback = null;
+            await DismissPreviewAsync();
+            if (editor is not null) await editor.CloseAsync();
+        }
+        previousView = nextView;
+        if (previewTrack is { } shown)
+        {
+            var updated = Tracks.Concat(OfflineTracks).FirstOrDefault(t => SameTrack(t, shown));
+            if (updated is not null) previewTrack = updated;
+        }
+        if (!ShowContent && !HomeVisible && editor is not null) await editor.CloseAsync();
+    }
+    private string DialogContext => $"{View}:{SearchMode}:{ShowContent}";
+    private Track? current => Playback.CurrentTrack;
+    private TransferJob? ActiveTransfer => Transfers.Jobs.FirstOrDefault(j => j.State is TransferState.Downloading or TransferState.Saving or TransferState.Waiting or TransferState.Exporting);
+    private Track? downloadingTrack => ActiveTransfer is { State: TransferState.Downloading or TransferState.Saving or TransferState.Exporting } job ? job.Track : null;
+    private Track? editingTrack;
+    private Track? previewTrack;
+    private FullScreenPlayer? fullPlayer;
+    private IReadOnlyList<Track> previewSequence = [];
+    private bool previewOfflineOnly, followingPlayback;
+    private string previewCollection = "All tracks";
+    private MetadataEditor? editor;
+    private void CloseEditor() { editingTrack = null; editor = null; }
+    private async Task MetadataSaved(Track track) { editingTrack = track; UpdatePresentedTrack(track); await OnMetadataChanged.InvokeAsync(track); }
+    private bool buffering => Playback.IsPreparing;
+    private bool savingList, playingOffline, playingOfflineOnly;
+    private IReadOnlyList<Track> playingSequence = [];
+    private string? playError, actionError, feedback;
+    [Parameter] public EventCallback OnActivity { get; set; }
+    private double volume = 1;
+    private AudioState? audio;
+    private Track? audioTrack;
+    private long request;
+    private readonly CancellationTokenSource lifetime = new();
+    private IEnumerable<Track> Visible => Tracks;
+    private bool HasActiveMedia => buffering || Playback.CanResume && audio?.Error is null;
+    private double Duration => audio?.Duration is > 0 and < double.PositiveInfinity ? audio.Duration : Math.Max(0, current?.Duration ?? 0);
+    private string PlaybackStatus => Playback.RestoredPaused ? "" : buffering ? playingOffline ? "Opening saved audio…" : "Connecting to Telegram. Audio will start as it buffers…"
+        : playError is not null ? Playback.CanResume && audio?.Error is null ? "Ready to resume" : "Playback stopped. Retry or download this track."
+        : audio?.Ended == true ? "Track finished. Choose your next listen."
+        : Playback.IsPlaying ? playingOffline ? "Playing offline" : Host.CanStream ? "Streaming from Telegram" : "Playing audio" : "Paused";
+    private static bool SameTrack(Track? left, Track? right) => left is not null && right is not null && left.Id == right.Id && left.Origin.AccountId == right.Origin.AccountId;
+    private bool IsCurrent(Track track) => SameTrack(current, track);
+    private IReadOnlyList<Track>? offlineVersion;
+    private HashSet<(long Account, Guid Id)> offlineMembership = [];
+    private bool IsSaved(Track track) => offlineMembership.Contains((track.Origin.AccountId, track.Id));
+    private string ViewportContext => $"{BrowseContext}:{Session.AccountId}:{DialogContext}:{Playlist.Id}:{PlaylistSort}:{channel}:{Criteria}:{Display}";
+    // Position and transfer bytes deliberately do not participate in this snapshot.
+    private object ListVersion => (Tracks, offlineMembership, Playlist.Tracks, Busy, ShowContent, selecting,
+        selectedTracks.Count, savingFavorite, savingList, savingPlaylistEdit, downloadingTrack, current,
+        buffering, Playback.IsPlaying, Playback.CanResume, HasActiveMedia, playError, audio?.Ended, Criteria, PlaylistSort, Playlist.Name);
+    private void OpenPreview(Track track)
+    {
+        previewTrack = track;
+        previewSequence = Visible.ToArray();
+        previewOfflineOnly = View == "offline";
+        previewCollection = View switch { "favorites" => "Liked Songs", "playlist" => Playlist.Name, "offline" => "Offline", _ => SearchMode ? "Search results" : "All tracks" };
+        followingPlayback = IsCurrent(track);
+        feedback = actionError = null;
+    }
+    private void OpenCurrent()
+    {
+        if (current is null) return;
+        previewTrack = current;
+        previewSequence = playingSequence;
+        previewOfflineOnly = playingOfflineOnly;
+        previewCollection = "Now playing";
+        followingPlayback = true;
+        feedback = actionError = null;
+    }
+    private void ClosePreview() { previewTrack = null; fullPlayer = null; previewSequence = []; followingPlayback = false; }
+    private async Task DismissPreviewAsync() { if (fullPlayer is not null) await fullPlayer.CloseAsync(); else ClosePreview(); }
+    private Track? PreviewAdjacent(int delta)
+    {
+        if (previewTrack is null) return null;
+        if (IsCurrent(previewTrack)) return Adjacent(delta);
+        var index = previewSequence.ToList().FindIndex(t => SameTrack(t, previewTrack));
+        return index >= 0 && index + delta >= 0 && index + delta < previewSequence.Count ? previewSequence[index + delta] : null;
+    }
+    private async Task SkipPreviewAsync(int delta)
+    {
+        if (previewTrack is null) return;
+        if (IsCurrent(previewTrack)) { followingPlayback = true; await Skip(delta); }
+        else if (PreviewAdjacent(delta) is { } next) { previewTrack = next; followingPlayback = IsCurrent(next); feedback = actionError = null; }
+    }
+    private async Task TogglePreviewAsync()
+    {
+        if (previewTrack is not { } track || track.Origin.Protected) return;
+        if (IsCurrent(track) && (buffering || Playback.CanResume && audio?.Error is null)) { followingPlayback = true; await Toggle(); return; }
+        await RetryPreviewAsync();
+    }
+    private async Task RetryPreviewAsync()
+    {
+        if (previewTrack is not { } track || track.Origin.Protected) return;
+        playingSequence = previewSequence.Where(t => !t.Origin.Protected).ToArray();
+        followingPlayback = true;
+        await Start(track, previewOfflineOnly);
+    }
+    private async Task StopPreviewAsync() { await DismissPreviewAsync(); await Stop(); }
+    private async Task FavoriteAsync(Track track)
+    {
+        if (savingFavorite is not null) return;
+        savingFavorite = track.Id;
+        try { await OnFavorite.InvokeAsync(track); }
+        finally { savingFavorite = null; }
+    }
+    public void UpdatePresentedTrack(Track track)
+    {
+        if (SameTrack(editingTrack, track)) editingTrack = track;
+        if (SameTrack(previewTrack, track)) previewTrack = track;
+        previewSequence = previewSequence.Select(t => SameTrack(t, track) ? track : t).ToArray();
+    }
+    protected override void OnInitialized() { Transfers.Changed += TransfersChanged; playingSequence = Playback.PlayingSequence; Playback.Changed += PlaybackChanged; }
+    private void PlaybackChanged()
+    {
+        volume = Playback.OutputVolume;
+        if (lifetime.IsCancellationRequested) return;
+        _ = InvokeAsync(() =>
+        {
+            if (lifetime.IsCancellationRequested) return;
+            playingSequence = Playback.PlayingSequence; playError = Playback.Error; playingOffline = current is not null && IsSaved(current);
+            if (!SameTrack(audioTrack, current)) audio = null;
+            if (followingPlayback)
+            {
+                if (current is null) ClosePreview();
+                else { previewTrack = current; previewSequence = playingSequence; }
+            }
+            StateHasChanged();
+        });
+    }
+    private void ReceiveAudioState(AudioState? state)
+    {
+        audio = state; audioTrack = current;
+        if (state?.Error is { } error) playError = error;
+    }
+    private void ReceiveAudioError(Exception error) => playError = Td.SafeError(error);
+    private void PlaybackStatusChanged() { if (!lifetime.IsCancellationRequested) StateHasChanged(); }
+    private void TransfersChanged()
+    {
+        if (lifetime.IsCancellationRequested) return;
+        _ = InvokeAsync(() =>
+        {
+            if (lifetime.IsCancellationRequested) return;
+            if (lastTransfer is { } id && Transfers.Jobs.FirstOrDefault(j => j.Id == id) is { } job)
+            {
+                if (job.State == TransferState.Completed) feedback = job.Purpose == TransferPurpose.Offline ? $"Saved {job.Track.Title} offline. Play it here anytime, even after reopening the app." : job.Result;
+                else if (job.State == TransferState.Canceled) feedback = job.Purpose == TransferPurpose.Offline ? "Offline save canceled." : "Download canceled.";
+                else if (job.State == TransferState.Failed) { actionError = job.Error; feedback = null; }
+                else if (job.State == TransferState.ReadyToExport) feedback = "Your file is ready. Open Downloads and choose Save file.";
+            }
+            StateHasChanged();
+        });
+    }
+    private Guid? lastTransfer;
+
+    private Task Search(LibrarySearchCriteria value) { selectedTracks.Clear(); feedback = null; return OnSearch.InvokeAsync(value); }
+    private Task ClearAdvancedFiltersAsync(LibrarySearchCriteria value) { selectedTracks.Clear(); channel = ""; feedback = null; return OnClearFilters.InvokeAsync(value); }
+    private async Task ResetFilters() { await ResetAsync(true); await ViewChanged.InvokeAsync(View is "offline" or "playlist" ? View : "all"); }
+    public async Task ResetAsync(bool clearSearch, bool notify = true)
+    {
+        channel = ""; feedback = actionError = null;
+        if (clearSearch) searchControls?.ResetDrafts(new());
+        await DismissPreviewAsync();
+        if (notify) await OnClearFilters.InvokeAsync(clearSearch ? new() : Criteria);
+    }
+    private async Task EditAsync(Track track) { await DismissPreviewAsync(); editingTrack = track; }
+    private Task DownloadAsync(Track track) => Download(track);
+    private Task ToggleOfflineAsync(Track track) => ToggleOffline(track, IsSaved(track));
+    private async Task SelectChannelAsync(string value) { selectedTracks.Clear(); channel = value; await ChannelChanged(); }
+    private Task ChannelChanged() => OnChannel.InvokeAsync(long.TryParse(channel, out var chat) ? chat : null);
+    public async Task FilterSource(long chatId, bool notify = true) { channel = chatId.ToString(CultureInfo.InvariantCulture); if (notify) await ChannelChanged(); }
+    private async Task Add(Track track)
+    {
+        if (savingList) return;
+        savingList = true; feedback = actionError = null;
+        var removing = playlistMembership.Contains(track.Id);
+        try { await OnAdd.InvokeAsync(track); feedback = removing ? $"Removed {track.Title} from {Playlist.Name}." : $"Added {track.Title} to {Playlist.Name}."; }
+        catch (Exception e) { actionError = Td.SafeError(e); }
+        finally { savingList = false; }
+    }
+    private async Task Listen(Track track) { if (current?.Id == track.Id && Playback.CanResume && audio?.Error is null) await Toggle(); else await PlayCollectionAsync(track, View == "offline"); }
+    private async Task Start(Track track, bool? offlineContext = null)
+    {
+        var offlineOnly = offlineContext ?? View == "offline";
+        var mine = ++request; audio = null; playError = null;
+        playingOffline = IsSaved(track);
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            if (IsCurrent(track) && Playback.CurrentEntryId is not null) await Playback.RetryAsync(lifetime.Token);
+            else await PlayCollectionAsync(track, offlineOnly);
+            if (mine == request && IsCurrent(track)) { audio = await Playback.StateAsync(lifetime.Token); audioTrack = track; }
+        }
+        catch (Exception e) { if (mine == request) playError = Td.SafeError(e); }
+        finally { if (mine == request && !lifetime.IsCancellationRequested) await InvokeAsync(StateHasChanged); }
+    }
+    private async Task Toggle()
+    {
+        if (buffering) { await Stop(); return; }
+        try { if (Playback.IsPlaying) await Playback.PauseAsync(); else { if (audio?.Ended == true) await Playback.SeekAsync(0); await Playback.ResumeAsync(lifetime.Token); } audio = await Playback.StateAsync(lifetime.Token); playError = null; }
+        catch (Exception e) { playError = Td.SafeError(e); }
+    }
+    private async Task Stop() { ++request; try { await Playback.StopAsync(); audio = null; playError = null; playingSequence = []; } catch (Exception e) { playError = Td.SafeError(e); } }
+    private Track? Adjacent(int delta) => Playback.Adjacent(delta);
+    private async Task Skip(int delta) { try { await Playback.SkipAsync(delta, lifetime.Token); } catch (Exception e) { playError = Td.SafeError(e); } }
+    private async Task SeekAsync(double value) { try { await Playback.SeekAsync(value); audio = await Playback.StateAsync(lifetime.Token); } catch (Exception e) { playError = Td.SafeError(e); } }
+    private async Task SetVolumeAsync(double value) { try { await Playback.SetVolumeAsync(value); volume = value; } catch (Exception e) { playError = Td.SafeError(e); } }
+    private Task Volume(ChangeEventArgs args) => double.TryParse(args.Value?.ToString(), CultureInfo.InvariantCulture, out var value) ? SetVolumeAsync(value) : Task.CompletedTask;
+    private async Task ToggleOffline(Track track, bool saved)
+    {
+        if (!saved) { await Download(track, offline: true); return; }
+        actionError = feedback = null;
+        try
+        {
+            if (current?.Id == track.Id) await Stop();
+            await Host.RemoveOfflineAsync(track, lifetime.Token);
+            playingSequence = playingSequence.Where(t => t.Id != track.Id).ToArray();
+            await OnOfflineChanged.InvokeAsync();
+            feedback = $"Removed {track.Title} from this device. It is still in your library.";
+        }
+        catch (Exception e) { actionError = Td.SafeError(e); }
+    }
+    private async Task Download(Track track, bool offline = false)
+    {
+        actionError = feedback = null;
+        try
+        {
+            await Transfers.BindAsync(Session.AccountId, lifetime.Token);
+            lastTransfer = (await Transfers.EnqueueAsync([track], offline ? TransferPurpose.Offline : TransferPurpose.Export, ct: lifetime.Token)).First();
+            feedback = offline ? "Added to Downloads for offline saving." : "Added to Downloads. Choose Save file when ready.";
+        }
+        catch (Exception e) { actionError = Td.SafeError(e); }
+    }
+    private Task CancelDownload() => ActiveTransfer is { } job ? Transfers.CancelAsync(job.Id) : Task.CompletedTask;
+    private async Task SavePlaylistOffline()
+    {
+        try
+        {
+            var tracks = ReadOfflinePlaylist is null ? Tracks : await ReadOfflinePlaylist();
+            await Transfers.BindAsync(Session.AccountId, lifetime.Token);
+            var ids = await Transfers.EnqueueAsync(tracks, TransferPurpose.Offline, Guid.NewGuid(), lifetime.Token);
+            feedback = $"Added {ids.Length} songs to Downloads. Future playlist changes will not download automatically.";
+        }
+        catch (Exception e) { actionError = Td.SafeError(e); }
+    }
+    public async Task CancelWorkAsync() { searchControls?.ResetDrafts(new()); await DismissPreviewAsync(); Artwork.CancelAll(); if (editor is not null) await editor.CloseAsync(); await CancelDownload(); await Stop(); }
+    public async Task CancelSourceAsync(Source source)
+    {
+        Artwork.RemoveSource(source);
+        if (previewTrack?.Origin is { } preview && preview.AccountId == source.AccountId && preview.ChatId == source.ChatId) await DismissPreviewAsync();
+        if (editingTrack?.Origin is { } editing && editing.AccountId == source.AccountId && editing.ChatId == source.ChatId && editor is not null) await editor.CloseAsync();
+        if (downloadingTrack?.Origin is { } download && download.AccountId == source.AccountId && download.ChatId == source.ChatId) await CancelDownload();
+        if (current?.Origin is { } playing && playing.AccountId == source.AccountId && playing.ChatId == source.ChatId) await Stop();
+    }
+    public async Task RemoveTracksAsync(IReadOnlyCollection<Guid> ids) { if (previewTrack is { } preview && ids.Contains(preview.Id)) await DismissPreviewAsync(); previewSequence = previewSequence.Where(t => !ids.Contains(t.Id)).ToArray(); if (editingTrack is { } editing && ids.Contains(editing.Id) && editor is not null) await editor.CloseAsync(); playingSequence = playingSequence.Where(t => !ids.Contains(t.Id)).ToArray(); if (downloadingTrack is { } downloading && ids.Contains(downloading.Id)) await CancelDownload(); if (current is { } track && ids.Contains(track.Id)) await Stop(); await Playback.RemoveTracksAsync(ids); }
+    private static string Time(double seconds) { var span = TimeSpan.FromSeconds(Math.Max(0, double.IsFinite(seconds) ? seconds : 0)); return span.TotalHours >= 1 ? $"{(long)span.TotalHours}:{span:mm\\:ss}" : span.ToString(@"m\:ss"); }
+    private static string Size(long bytes) => bytes >= 1048576 ? $"{bytes / 1048576d:0.#} MB" : $"{Math.Max(0, bytes) / 1024d:0.#} KB";
+    private static string Format(MediaFile file) => Path.GetExtension(file.FileName).TrimStart('.').ToUpperInvariant() is { Length: > 0 } extension ? extension : "AUDIO";
+    public async ValueTask DisposeAsync() { Playback.Changed -= PlaybackChanged; Transfers.Changed -= TransfersChanged; lifetime.Cancel(); await Task.CompletedTask; lifetime.Dispose(); }
+}

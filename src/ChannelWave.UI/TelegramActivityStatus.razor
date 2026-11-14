@@ -1,0 +1,104 @@
+@using ChannelWave.Telegram
+@implements IDisposable
+@inject TelegramSession Session
+@inject ChannelSync Sync
+
+<span class="telegram-activity" role="status" aria-live="polite" aria-atomic="true">
+    @if (visibleLabel is not null)
+    {
+        <LoadingIndicator Decorative="true" />
+        <span class="telegram-activity-label">@visibleLabel</span>
+    }
+</span>
+
+@code {
+    [Parameter] public bool Suppressed { get; set; }
+
+    private long? owner;
+    private string? candidate;
+    private string? visibleLabel;
+    private CancellationTokenSource? transition;
+    private bool disposed;
+
+    private string? Candidate => Suppressed || Session.AccountId is null || Session.Authorization.State != "ready"
+        ? null
+        : Session.ConnectionLabel ?? (Sync.IsRunning ? Sync.Progress.Phase switch
+        {
+            "starting" or "indexing" => "Indexing…",
+            "catchingUp" or "updating" => "Updating…",
+            _ => null
+        } : null);
+
+    protected override void OnInitialized()
+    {
+        Session.Changed += Changed;
+        Sync.Changed += Changed;
+    }
+
+    protected override void OnParametersSet() => Refresh();
+
+    private void Changed()
+    {
+        if (!disposed) _ = InvokeAsync(Refresh);
+    }
+
+    private void Refresh()
+    {
+        if (disposed) return;
+        var next = Candidate;
+        if (owner != Session.AccountId || Suppressed || Session.Authorization.State != "ready")
+        {
+            CancelTransition();
+            owner = Session.AccountId;
+            candidate = null;
+            SetLabel(null);
+        }
+        if (candidate == next) return;
+        candidate = next;
+        CancelTransition();
+
+        if (next is not null && visibleLabel is not null)
+            SetLabel(next);
+        else if (next is not null || visibleLabel is not null)
+        {
+            transition = new();
+            _ = TransitionAsync(next, transition.Token);
+        }
+    }
+
+    private async Task TransitionAsync(string? label, CancellationToken ct)
+    {
+        try
+        {
+            await Task.Delay(label is null ? 500 : 1000, ct);
+            await InvokeAsync(() =>
+            {
+                if (!disposed && !ct.IsCancellationRequested && owner == Session.AccountId && candidate == label)
+                    SetLabel(label);
+            });
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+    }
+
+    private void SetLabel(string? label)
+    {
+        if (visibleLabel == label) return;
+        visibleLabel = label;
+        StateHasChanged();
+    }
+
+    private void CancelTransition()
+    {
+        transition?.Cancel();
+        transition?.Dispose();
+        transition = null;
+    }
+
+    public void Dispose()
+    {
+        disposed = true;
+        Session.Changed -= Changed;
+        Sync.Changed -= Changed;
+        CancelTransition();
+    }
+}

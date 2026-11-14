@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType><IsTestProject>true</IsTestProject></PropertyGroup><ItemGroup><PackageReference Include="xunit.v3" /><ProjectReference Include="../../src/ChannelWave.Core/ChannelWave.Core.csproj" /><ProjectReference Include="../../src/ChannelWave.Telegram/ChannelWave.Telegram.csproj" /><ProjectReference Include="../../src/ChannelWave.Storage.Sqlite/ChannelWave.Storage.Sqlite.csproj" /></ItemGroup><ItemGroup><Content Include="../browser/fixtures/search-cases.json" Link="search-cases.json" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+    <ItemGroup><Compile Include="../../src/ChannelWave.Host.Maui/CastMediaLease.cs" Link="CastMediaLease.cs" /></ItemGroup>
+    <ItemGroup>
+        <Compile Include="../../src/ChannelWave.Host.Maui/MobileCastAudio.cs" Link="MobileCastAudio.cs" />
+        <Compile Include="../../src/ChannelWave.Host.Maui/CastPlaybackState.cs" Link="CastPlaybackState.cs" />
+    </ItemGroup>
+    <ItemGroup><Compile Include="../../src/ChannelWave.Host.Maui/Platforms/Android/AndroidOutputMap.cs" Link="AndroidOutputMap.cs" /></ItemGroup>
+    <ItemGroup><Compile Include="../../src/ChannelWave.Host.Maui/Platforms/Android/AndroidPlaybackCompletion.cs" Link="AndroidPlaybackCompletion.cs" /></ItemGroup>
+    <ItemGroup><Compile Include="../../src/ChannelWave.UI/HomeSessionState.cs" Link="HomeSessionState.cs" /></ItemGroup>
+    <ItemGroup><Compile Include="../../src/ChannelWave.Host.Linux/LinuxProfileSecurity.cs" Link="LinuxProfileSecurity.cs" /></ItemGroup>
+</Project>

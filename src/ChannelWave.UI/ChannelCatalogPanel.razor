@@ -1,0 +1,25 @@
+@using ChannelWave.Telegram
+
+<section class="channel-sync" aria-labelledby="channel-catalog-title">
+    <div class="channel-sync-heading" aria-busy="@(Running || Pending ? "true" : "false")">
+        <div><h2 id="channel-catalog-title">Find your sources</h2><p>Find channels, groups, and private chats from Main and Archive, including bots and Saved Messages. Finding a source doesn't index its audio.</p></div>
+        @if (Running) { <button disabled="@Pending" @onclick="OnPause">@if (Pending) { <LoadingIndicator Decorative="true" /> }@(Pending ? "Pausing…" : "Pause discovery")</button> }
+        else { <button disabled="@Pending" @onclick="OnStart">@if (Pending) { <LoadingIndicator Decorative="true" /> }@(Pending ? "Starting…" : Progress.Phase == "paused" ? "Resume discovery" : Progress.Phase == "failed" ? "Retry discovery" : "Refresh source list")</button> }
+    </div>
+    <p class="channel-sync-progress" role="status">
+        @if (Running || Pending) { <LoadingIndicator Decorative="true" /> }
+        <strong>@(Progress.Phase switch { "discovering" or "starting" => "Finding sources…", "waiting" => "Waiting before retrying discovery…", "completed" => "Source list is ready.", "paused" => "Discovery paused. Sources already found are saved.", "failed" => "Discovery stopped. Retry to continue.", _ => "Sources will appear below." })</strong>
+        <span>@Progress.Found sources found · No audio indexed by discovery</span>
+    </p>
+    @if (Progress.Error is not null) { <p class="channel-row-error" role="alert">@Progress.Error</p> }
+    @if (Error is not null) { <p class="channel-row-error" role="alert">@Error</p> }
+</section>
+
+@code {
+    [Parameter] public ChannelCatalogProgress Progress { get; set; } = new();
+    [Parameter] public bool Running { get; set; }
+    [Parameter] public bool Pending { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public EventCallback OnStart { get; set; }
+    [Parameter] public EventCallback OnPause { get; set; }
+}

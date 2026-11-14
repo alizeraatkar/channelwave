@@ -1,0 +1,8 @@
+<button type="button" class="music-icon-button listening-action @Class" aria-label="@Label" title="@Label" disabled="@Disabled" @onclick="OnClick"><MusicIcon Name="@Icon" /></button>
+@code {
+    [Parameter] public string Icon { get; set; } = "play";
+    [Parameter] public string Label { get; set; } = "Play";
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public string? Class { get; set; }
+    [Parameter] public EventCallback OnClick { get; set; }
+}

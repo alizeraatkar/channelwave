@@ -1,0 +1,98 @@
+@using ChannelWave.Core
+
+<section class="playlist-manager" aria-label="Playlist management">
+    <div class="playlist-picker-row">
+        <label class="playlist-field">Playlist
+            <select @ref="playlistInput" aria-label="Choose playlist" value="@Current.Id" disabled="@Busy" @onchange="Select">
+                @foreach (var list in Playlists) { <option value="@list.Id">@list.Name · @list.Tracks.Length songs</option> }
+            </select>
+        </label>
+        <button class="outline-button" aria-label="New playlist" title="New playlist" disabled="@Busy" @onclick="() => Begin(PlaylistAction.Create)"><MusicIcon Name="plus" /><span class="playlist-new-label">New playlist</span></button>
+    </div>
+    <div class="playlist-management-tools">
+        <button class="subtle-button" aria-expanded="@showActions.ToString().ToLowerInvariant()" aria-controls="@actionsId" disabled="@Busy" @onclick="() => showActions = !showActions">Playlist actions<MusicIcon Name="chevron" /></button>
+        <label class="playlist-sort"><span>Sort</span>
+            <select aria-label="Sort playlist" value="@Sort" disabled="@Busy" @onchange="SortChanged">
+                <option value="Custom">Custom order</option><option value="Title">Title</option><option value="Artist">Artist</option><option value="Newest">Newest first</option>
+                <option value="AddedNewest">Newest added</option><option value="AddedOldest">Oldest added</option>
+                <option value="TitleDescending">Title Z–A</option><option value="ArtistDescending">Artist Z–A</option>
+                <option value="Oldest">Oldest published</option><option value="Shortest">Shortest first</option><option value="Longest">Longest first</option>
+            </select>
+        </label>
+    </div>
+    <div id="@actionsId" class="playlist-operations" hidden="@(!showActions)">
+        <button class="subtle-button" disabled="@Busy" @onclick="() => Begin(PlaylistAction.Rename)">Rename</button>
+        <button class="subtle-button" disabled="@Busy" @onclick="() => Begin(PlaylistAction.Duplicate)">Duplicate</button>
+        <button class="subtle-button" disabled="@(Busy || Current.Tracks.Length == 0)" @onclick="() => Begin(PlaylistAction.Clear)">Clear tracks</button>
+        @if (Current.Id != Playlists[0].Id) { <button class="subtle-button" disabled="@Busy" @onclick="() => Begin(PlaylistAction.Delete)">Delete playlist</button> }
+    </div>
+    @if (editing is { } action)
+    {
+        <form class="playlist-editor" @onsubmit="Save" @onsubmit:preventDefault>
+            @if (action is PlaylistAction.Delete or PlaylistAction.Clear)
+            {
+                <p>@(action == PlaylistAction.Delete ? $"Delete “{Current.Name}”?" : $"Remove all tracks from “{Current.Name}”?") Your songs stay in your library.</p>
+            }
+            else
+            {
+                <label class="playlist-field">@(action == PlaylistAction.Create ? "New playlist name" : action == PlaylistAction.Duplicate ? "Copy name" : "Playlist name")
+                    <input @ref="nameInput" autofocus maxlength="100" required dir="auto" @bind="name" />
+                </label>
+            }
+            <div class="playlist-editor-actions"><button type="submit" class="light-button" disabled="@(Busy || saving)">@(saving ? "Saving…" : action == PlaylistAction.Delete ? "Delete" : action == PlaylistAction.Clear ? "Remove all tracks" : "Save playlist")</button><button type="button" class="outline-button" disabled="@saving" @onclick="Cancel">Cancel</button></div>
+        </form>
+    }
+    @if (error is not null) { <p class="music-error" role="alert">@error</p> }
+    @if (feedback is not null) { <p class="music-feedback" role="status">@feedback</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public IReadOnlyList<Playlist> Playlists { get; set; } = [];
+    [Parameter, EditorRequired] public Playlist Current { get; set; } = null!;
+    [Parameter] public PlaylistSort Sort { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public EventCallback<Guid> OnSelect { get; set; }
+    [Parameter] public EventCallback<PlaylistSort> OnSort { get; set; }
+    [Parameter] public EventCallback<PlaylistEdit> OnEdit { get; set; }
+    private PlaylistAction? editing;
+    private readonly string actionsId = $"playlist-actions-{Guid.NewGuid():N}";
+    private Guid? previousId;
+    private string name = "";
+    private string? error, feedback;
+    private bool saving, focusName, focusPlaylist, showActions;
+    private ElementReference nameInput, playlistInput;
+    protected override void OnParametersSet()
+    {
+        if (previousId != Current.Id && !saving) { editing = null; showActions = false; error = feedback = null; }
+        previousId = Current.Id;
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (focusName) { focusName = false; await nameInput.FocusAsync(preventScroll: true); }
+        if (focusPlaylist) { focusPlaylist = false; await playlistInput.FocusAsync(preventScroll: true); }
+    }
+    private void Begin(PlaylistAction action)
+    {
+        editing = action; showActions = false; error = feedback = null;
+        name = action == PlaylistAction.Create ? "" : action == PlaylistAction.Duplicate ? CopyName(Current.Name) : Current.Name;
+        focusName = action is not (PlaylistAction.Delete or PlaylistAction.Clear);
+    }
+    private static string CopyName(string value) => value[..Math.Min(value.Length, 95)] + " copy";
+    private void Cancel() { editing = null; error = null; focusPlaylist = true; }
+    private Task Select(ChangeEventArgs e) => Guid.TryParse(e.Value?.ToString(), out var id) ? OnSelect.InvokeAsync(id) : Task.CompletedTask;
+    private Task SortChanged(ChangeEventArgs e) => Enum.TryParse<PlaylistSort>(e.Value?.ToString(), out var value) ? OnSort.InvokeAsync(value) : Task.CompletedTask;
+    private async Task Save()
+    {
+        if (saving || editing is not { } action) return;
+        saving = true; error = feedback = null;
+        try
+        {
+            await OnEdit.InvokeAsync(new(action, Current.Id, name));
+            editing = null;
+            focusPlaylist = true;
+            feedback = action switch { PlaylistAction.Delete => "Playlist deleted. Your songs are still in your library.", PlaylistAction.Clear => "Playlist cleared.", PlaylistAction.Duplicate => "Playlist duplicated.", _ => "Playlist saved." };
+        }
+        catch (Exception e) { error = ChannelWave.Telegram.Td.SafeError(e); }
+        finally { saving = false; }
+    }
+}

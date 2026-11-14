@@ -1,0 +1,128 @@
+@using ChannelWave.Core
+@using System.Globalization
+
+@{
+    var all = Sources.Concat(Channels).DistinctBy(x => x.ChatId).OrderBy(x => x.Name).ToArray();
+    var saved = Sources.ToDictionary(x => x.ChatId);
+    var search = Metadata.Normalize(searchText);
+    var visible = all.Where(x => (view != "added" || saved.ContainsKey(x.ChatId))
+        && (view != "new" || !saved.ContainsKey(x.ChatId))
+        && (search.Length == 0 || Metadata.Normalize(x.Name).Contains(search, StringComparison.Ordinal))).ToArray();
+}
+
+<section class="panel channel-picker" aria-labelledby="channel-picker-title" aria-busy="@(IsLoading ? "true" : "false")">
+    <div class="channel-heading">
+        <div><h2 id="channel-picker-title">Choose a source</h2><p>Add the sources you want to hear. Only your choices appear in your music library.</p></div>
+    </div>
+
+    @if (all.Length > 0)
+    {
+        <div class="channel-toolbar">
+            <div class="channel-search">
+                <label for="channel-search">Search discovered sources</label>
+                <div class="channel-search-field">
+                    <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 4 4"/></svg>
+                    <input id="channel-search" type="search" placeholder="Find a source by name" @bind="searchText" @bind:event="oninput" />
+                    @if (searchText.Length > 0) { <button class="channel-clear" aria-label="Clear source search" @onclick="() => searchText = string.Empty"><MusicIcon Name="close" /></button> }
+                </div>
+            </div>
+            <div class="channel-filters" role="group" aria-label="Filter sources">
+                <button aria-pressed="@(view == "all" ? "true" : "false")" @onclick='() => view = "all"'>All <span>@all.Length</span></button>
+                <button aria-pressed="@(view == "added" ? "true" : "false")" @onclick='() => view = "added"'>In library <span>@saved.Count</span></button>
+                <button aria-pressed="@(view == "new" ? "true" : "false")" @onclick='() => view = "new"'>Not added <span>@(all.Length - saved.Count)</span></button>
+            </div>
+        </div>
+    }
+
+    @if (!string.IsNullOrWhiteSpace(Message)) { <p class="channel-feedback" role="status">@Message</p> }
+    @if (UnindexError is not null) { <p class="channel-error" role="alert">Couldn't unindex the source. @UnindexError</p> }
+    @if (LoadError is not null) { <div class="channel-error" role="alert"><strong>Couldn't find more sources</strong><p>@LoadError</p><button disabled="@IsBusy" @onclick="OnLoad">Try again</button></div> }
+    @if (IndexError is not null && !visible.Any(x => x.ChatId == ErrorChatId)) { <p class="channel-error" role="alert">@IndexError</p> }
+
+    @if (all.Length == 0)
+    {
+        @if (IsLoading)
+        {
+            <LoadingSkeleton Sources="true" />
+        }
+        else
+        {
+            <div class="channel-empty"><strong>Your music starts with a source</strong><p>Find channels, groups, and private chats from your Telegram Main and Archive lists, then add one to begin. Your Telegram memberships stay the same.</p></div>
+        }
+    }
+    else if (visible.Length == 0)
+    {
+        <div class="channel-empty"><strong>@(searchText.Length > 0 ? "No matching sources" : view == "added" ? "No sources in your library yet" : "All discovered sources are in your library")</strong>
+            <p>@(searchText.Length > 0 ? "Try another name, or find more sources to expand this list." : "Show all sources to choose your next source.")</p>
+            <button @onclick="ResetFilters">Show all sources</button>
+        </div>
+    }
+    else
+    {
+        <ul class="channel-list" aria-label="Discovered sources" aria-busy="@(IsLoading ? "true" : "false")">
+            @foreach (var channel in visible)
+            {
+                saved.TryGetValue(channel.ChatId, out var source);
+                var indexing = IndexingChatId == channel.ChatId;
+                var hasError = ErrorChatId == channel.ChatId && IndexError is not null;
+                var action = hasError ? "Try again" : source is null ? "Add to library" : source.HistoryComplete ? "Added to library" : "Resume adding music";
+                <li @key="channel.ChatId" class="channel-row @(source is not null ? "channel-added" : "")" aria-busy="@(indexing || UnindexingChatId == channel.ChatId ? "true" : "false")">
+                    <span class="channel-avatar" aria-hidden="true">@Initial(channel.Name)</span>
+                    <div class="channel-details"><strong><bdi dir="auto">@channel.Name</bdi></strong>
+                        <div class="channel-meta">
+                            @if (source is null) { <span>Not added yet</span> }
+                            else
+                            {
+                                <span class="channel-saved"><MusicIcon Name="check" /> In your library</span>
+                                @if (source.RefreshedAt is { } time) { <time datetime="@time.ToString("O")" title="@time.ToLocalTime().ToString("f")">Updated @Updated(time)</time> }
+                            }
+                        </div>
+                        @if (source is not null && !source.HistoryComplete) { <p class="channel-history">@(IsIndexing && !source.HistoryComplete ? "Audio history is queued for background indexing." : "Audio indexing is paused. Resume to load the remaining history.")</p> }
+                        @if (source?.Sync is { } sync)
+                        {
+                            <p class="channel-history">@(sync.Inaccessible ? "Access unavailable. Your songs and playlists are kept." : !IsIndexing ? "Sync paused. Resume to catch up." : sync.Status == "waiting" ? "Waiting before retry. Progress is saved." : sync.Status == "catchingUp" ? "Catching up…" : sync.Status == "auditing" ? "Checking older music. Progress is saved." : "Up to date")</p>
+                        }
+                        @if (hasError) { <p class="channel-row-error" role="alert">@IndexError</p> }
+                    </div>
+                    <div class="channel-row-actions">
+                        <button class="@(source is null ? "channel-primary" : "channel-secondary")" disabled="@(IsBusy || source?.HistoryComplete == true && !hasError || IsIndexing && source is not null)"
+                            aria-label="@($"{action}: {channel.Name}")" @onclick="() => OnIndex.InvokeAsync(channel)">@if (indexing) { <LoadingIndicator Decorative="true" /> }@(indexing ? source is null ? "Adding audio…" : "Loading audio…" : action)</button>
+                        @if (indexing) { <button class="channel-cancel" @onclick="OnCancel">Cancel</button> }
+                        @if (source is not null)
+                        {
+                            <button class="channel-secondary" disabled="@IsBusy" aria-label="@($"Refresh source: {channel.Name}")" @onclick="() => OnRefresh.InvokeAsync(source)">@(source.Sync?.Inaccessible == true ? "Retry" : "Refresh now")</button>
+                            <button class="channel-unindex" disabled="@IsBusy" aria-label="@($"Remove from library: {channel.Name}")" @onclick="() => OnUnindex.InvokeAsync(source)">@if (UnindexingChatId == channel.ChatId) { <LoadingIndicator Decorative="true" /> }@(UnindexingChatId == channel.ChatId ? "Unindexing…" : "Remove from library")</button>
+                        }
+                    </div>
+                </li>
+            }
+        </ul>
+        <div class="channel-list-footer"><span>@visible.Length of @all.Length discovered sources</span><span>Search filters the sources found so far.</span></div>
+    }
+    <p class="channel-footnote">Adding a source indexes its music and automatically loads file details and covers. Audio loads when you play or save a track.</p>
+    @if (saved.Count > 0) { <p class="channel-footnote">Unindexing removes the source's local audio entries, offline copies and playlist references. You can index it again from this list.</p> }
+</section>
+
+@code {
+    [Parameter] public IReadOnlyList<Source> Channels { get; set; } = [];
+    [Parameter] public IReadOnlyList<Source> Sources { get; set; } = [];
+    [Parameter] public bool IsBusy { get; set; }
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public bool IsIndexing { get; set; }
+    [Parameter] public long? IndexingChatId { get; set; }
+    [Parameter] public long? UnindexingChatId { get; set; }
+    [Parameter] public long? ErrorChatId { get; set; }
+    [Parameter] public string? Message { get; set; }
+    [Parameter] public string? LoadError { get; set; }
+    [Parameter] public string? IndexError { get; set; }
+    [Parameter] public string? UnindexError { get; set; }
+    [Parameter] public EventCallback OnLoad { get; set; }
+    [Parameter] public EventCallback<Source> OnIndex { get; set; }
+    [Parameter] public EventCallback<Source> OnUnindex { get; set; }
+    [Parameter] public EventCallback OnCancel { get; set; }
+    private string searchText = "", view = "all";
+    private void ResetFilters() { searchText = ""; view = "all"; }
+    private static string Initial(string name) => string.IsNullOrWhiteSpace(name) ? "#" : StringInfo.GetNextTextElement(name.Trim());
+    [Parameter] public EventCallback<Source> OnRefresh { get; set; }
+    private static string Updated(DateTimeOffset time) => DateTimeOffset.UtcNow - time < TimeSpan.FromMinutes(1) ? "just now" : time.ToLocalTime().ToString("g");
+}

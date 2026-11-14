@@ -1,0 +1,1009 @@
+@using ChannelWave.Core
+@using ChannelWave.Telegram
+@using Bit.BlazorUI
+@using System.Text.Json
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject TelegramSession Session
+@inject ILibraryRepository Library
+@inject IRuntimeHost Host
+@inject PlaybackCoordinator Playback
+@inject PlaybackMediaResolver PlaybackMedia
+@inject ChannelSync Sync
+@inject ChannelCatalog Catalog
+@inject MetadataScanner MetadataScanner
+@inject IJSRuntime JS
+@inject TransferManager Transfers
+@inject MediaStorageService Storage
+@inject HomeSessionState HomeState
+
+<link rel="stylesheet" href="_content/ChannelWave.UI/listening.css" />
+<link rel="stylesheet" href="_content/ChannelWave.UI/discovery.css" />
+<link rel="stylesheet" href="_content/ChannelWave.UI/redesign.css" />
+
+@if (!initializationComplete)
+{
+    <StartupScreen />
+}
+else
+{
+<CascadingValue Value="presentation" IsFixed="true">
+<CascadingValue Name="BrowseMusicCredit" Value="CreditNavigation" IsFixed="true">
+<a class="skip-link" href="#main-content">Skip to content</a>
+<div class="app-shell redesign @(Route.IsRoot ? "root-page" : "detail-page")" data-update-busy="@(busy || connecting || cleanupPending || restoringCleanup || syncPending || catalogPending ? "true" : "false")">
+    <header class="app-topbar">
+        <div class="app-brand-status">
+            <button class="brand" aria-label="ChannelWave home" @onclick='() => Navigate("home")'><span class="brand-mark"><img src="_content/ChannelWave.UI/brand/channelwave-mark.svg" alt="" /></span><strong>ChannelWave</strong></button>
+            <TelegramActivityStatus Suppressed="@(cleanupPending || restoringCleanup)" />
+        </div>
+        <div class="app-topbar-actions">
+            <button class="downloads-shortcut" aria-label="Open Downloads" @onclick='() => Navigate("downloads")'><MusicIcon Name="download" /><span>@Transfers.Jobs.Count(j => !j.Finished)</span></button>
+            @if (page == "home" && HomeAccount is not null)
+            {
+                <button id="edit-home-tabs" class="icon-button" aria-label="Edit Home tabs" @onclick='() => Navigate("customize")'><MusicIcon Name="more" /></button>
+            }
+        </div>
+    </header>
+    <aside class="app-sidebar" aria-label="Your library sidebar">
+        <RootNavigation Active="Route.Root" OnNavigate="Navigate" />
+        <ConnectionStatus />
+    </aside>
+    <main id="main-content" class="content" tabindex="-1">
+        @if (!Route.IsRoot)
+        {
+            <div class="detail-toolbar">
+                <button class="subtle-button" aria-label="Go back" @onclick="Back"><MusicIcon Name="back" />Back</button><span>@Route.Root / @PageTitle</span>
+                @if (Route.Root == RootSection.Library && page != "search")
+                { <button class="icon-button detail-search" aria-label="Open search" @onclick='() => Navigate("search")'><MusicIcon Name="search" /></button> }
+            </div>
+        }
+        @if (customizationError is not null) { <p class="music-error" role="alert">@customizationError</p> }
+        @if (page == "playlist" && selectedPlaylist is { } selected && !AllPlaylists.Any(p => p.Id == selected))
+        { <p role="status">This playlist is no longer available. Your other music is unchanged. <button class="subtle-button" @onclick='() => Navigate("library")'>Open Library</button></p> }
+        @if (page == "library")
+        {
+            <LibraryLanding Overview="overview" PlaylistCount="AllPlaylists.Count" OfflineCount="offlineCopies.Count(c => c.Health == OfflineHealth.Saved)" SourceCount="sources.Count" OnNavigate="OpenCategory" OnFilter="OpenSavedFilter" />
+        }
+        @if (page == "customize") { <HomeTabEditor Playlists="AllPlaylists" OnDone="Back" /> }
+        @if (page == "playlists") { <PlaylistCatalog Playlists="AllPlaylists" Display="Display" OnDisplay="ChangeDisplay" OnSelect="SelectPlaylist" OnEdit="EditPlaylist" Busy="busy" /> }
+        @if (page == "about") { <section class="account-page"><h1>About ChannelWave</h1><p>Your sources. Your music.</p><p>A personal music library for Telegram, stored on this device.</p><p class="muted">@Host.Capabilities.Host &middot; TDLib @Session.Version</p></section> }
+        @if (error is not null || Session.Error is not null) { <p class="error" role="alert">@(error ?? Session.Error)</p> }
+        @if (!cleanupVerified && !restoringCleanup) { <button class="outline-button" disabled="@busy" @onclick="VerifyCleanup">Retry local cleanup check</button> }
+        <PlaybackPersistenceNotice />
+        @if (status is not null) { <p class="status" role="status">@status</p> }
+        @if (page == "home")
+        {
+            @if (HomeAccount is { } homeAccount)
+            {
+                <MusicHome @key="homeAccount" Account="homeAccount" Revision="homeRevision" TabId="@homeTab" InitialLimit="restoredItemLimit" Playlists="AllPlaylists" Busy="busy" OnTab="SelectHomeTab" OnPreview="PreviewHome" OnAction="HomeAction" OnOpen="OpenItem" />
+            }
+            @if (!homeHasMusic)
+            {
+            <section class="home-feature">
+                <div class="feature-copy"><h1>Your sources.<br />Your kind of music.</h1><p>All the tracks you find on Telegram.<br />One place to make them yours.</p>
+                    @if (Session.AccountId is null) { <button class="primary-button" disabled="@(busy || connecting || Session.Authorization.State != "idle")" @onclick="Connect">@if (connecting) { <LoadingIndicator Decorative="true" /> }@(connecting ? "Reconnecting…" : "Connect account")<MusicIcon Name="arrow" /></button> }
+                    else { <button class="primary-button" @onclick='() => Navigate(sources.Count == 0 ? "channels" : "tracks")'>@(sources.Count == 0 ? "Choose your sources" : "Explore your music")<MusicIcon Name="arrow" /></button> }
+                </div>
+                <div class="feature-record" aria-hidden="true"><div class="record-disc"><span><img class="brand-art" src="_content/ChannelWave.UI/brand/channelwave-mark.svg" alt="" width="48" height="48" /></span></div><div class="record-sleeve"><img class="brand-art" src="_content/ChannelWave.UI/brand/channelwave-mark.svg" alt="" width="32" height="32" /><strong>YOUR<br />OWN<br />WAVE.</strong><span>CHANNELWAVE</span></div></div>
+            </section>
+            }
+        }
+        @if (page is "account" or "settings")
+        {
+            <section class="account-page" aria-label="Connection">
+                <div class="account-symbol"><MusicIcon Name="@(Session.AccountId is null ? "source" : "check")" /></div>
+                <h1>@(page == "settings" ? "Settings" : Session.AccountId is null ? "Connect Telegram" : "Profile")</h1>
+                @if (page == "account" && (Session.Identity ?? profile) is not null)
+                { <div class="profile-identity"><span class="profile-avatar">@ProfileInitials</span><div><h2 dir="auto">@ProfileName</h2>@if (ProfileUsername is not null) { <p dir="auto">@@@ProfileUsername</p> }</div></div> }
+                <p class="account-intro">@(Session.AccountId is null ? "Connect Telegram, choose the sources you love, and give their music a home." : "Manage your Telegram connection and the library stored on this device.")</p>
+                @if (busyLabel is not null || Session.IsResolvingAccount) { <p><LoadingIndicator Label='@(Session.IsResolvingAccount ? "Loading your Telegram account…" : busyLabel!)' /></p> }
+                @if (page == "account")
+                {
+                <div class="connection-form" aria-busy="@(busy || connecting || Session.IsResolvingAccount ? "true" : "false")">
+                    @if (cleanupPending)
+                    {
+                        @if (!busy) { <p role="status">Sign-out cleanup is incomplete. Retry before reconnecting.</p> }
+                        <button class="primary-button" disabled="@busy" @onclick="LogOut">Retry sign-out cleanup</button>
+                    }
+                    else if (Session.Authorization.State == "ready" && Session.AccountId is null)
+                    {
+                        @if (!Session.IsResolvingAccount) { <p role="status">Your Telegram account could not be loaded.</p> }
+                        <button class="primary-button" disabled="@(busy || Session.IsResolvingAccount)" @onclick="RetryAccount">Retry account connection</button>
+                    }
+                    else if (Session.Authorization.State is "phone" or "code" or "password" or "email" or "emailCode")
+                    {
+                        <form @onsubmit="Submit" @onsubmit:preventDefault><label for="auth-value">@Session.Authorization.Label</label>
+                            @if (Session.Authorization.Delivery is not null) { <p class="muted">Delivery reported by Telegram: @Session.Authorization.Delivery</p> }
+                            <input id="auth-value" type="@(Session.Authorization.State == "password" ? "password" : Session.Authorization.State == "phone" ? "tel" : Session.Authorization.State == "email" ? "email" : "text")" @bind="input" autocomplete="off" required />
+                            <button class="primary-button" type="submit" disabled="@busy">@if (busy) { <LoadingIndicator Decorative="true" /> }@(busy ? "Connecting…" : "Continue")</button>
+                        </form>
+                    }
+                    else if (Session.AccountId is null)
+                    {
+                        <button class="primary-button" disabled="@(busy || connecting || Session.Authorization.State != "idle")" @onclick="Connect">@if (connecting || busy) { <LoadingIndicator Decorative="true" /> }@(connecting ? "Reconnecting…" : busy ? "Connecting…" : "Connect account")</button>
+                        @if (Session.Authorization.State != "idle" && busyLabel is null) { <p role="status">@if (connecting) { <LoadingIndicator Decorative="true" /> }@Session.Authorization.Label</p> }
+                    }
+                    else { <p class="connection-confirmed"><MusicIcon Name="check" />Connected to Telegram</p><button class="outline-button" disabled="@busy" @onclick="LogOut">Sign out and erase local data</button> }
+                </div>
+                <p class="privacy-note"><MusicIcon Name="shield" /><span>ChannelWave is an independent Telegram client. Connecting creates a Telegram session with access beyond the music sources you select. Your session stays on this device or browser profile.</span></p>
+                <button class="settings-row" @onclick='() => Navigate("settings")'><MusicIcon Name="shield" />Listening &amp; privacy<MusicIcon Name="arrow" /></button>
+                <button class="settings-row" @onclick='() => Navigate("about")'><MusicIcon Name="info" />About ChannelWave<MusicIcon Name="arrow" /></button>
+                }
+                @if (page == "settings")
+                {
+                    <button class="settings-row" @onclick='() => Navigate("downloads")'><MusicIcon Name="download" />Offline downloads<MusicIcon Name="arrow" /></button>
+                    <section class="account-details"><h2>Storage</h2><p>Manage saved songs and temporary files on this device.</p><button class="outline-button" @onclick='() => Navigate("storage")'>Manage storage</button></section>
+                    <section class="account-details" aria-label="Automatic metadata">
+                        <h2>Music details</h2>
+                        <p role="status">@(MetadataScanner.Enabled ? MetadataScanner.Progress.Phase == "reading" ? "Loading music details..." : "Automatic loading enabled" : "Automatic loading paused")  /  @MetadataScanner.Progress.Completed processed  /  @MetadataScanner.Progress.Failed failed attempts</p>
+                        @if (MetadataScanner.Progress.Error is { } metadataError) { <p class="music-error">@metadataError</p> }
+                        <button class="outline-button" disabled="@busy" @onclick="ToggleMetadata">@(MetadataScanner.Enabled ? "Pause metadata loading" : "Resume metadata loading")</button>
+                        <button class="outline-button" disabled="@busy" @onclick="RetryMetadata">Retry failed metadata</button>
+                    </section>
+                }
+                @if (page == "settings" && cleanupVerified && !cleanupPending && Playback.ListeningAccount is not null) { <ListeningSettings /> }
+                @if (page == "settings") { <div class="settings-row"><MusicIcon Name="appearance" /><span>Appearance</span><span>Dark</span></div> }
+                @if (page == "account") { <details class="account-details"><summary>Connection details</summary><p class="muted">@Host.Capabilities.Host · @Session.Authorization.State</p><button class="outline-button" disabled="@busy" @onclick="Probe">Check Telegram engine</button>@if (Session.Version is not null) { <p class="muted">Engine @Session.Version</p> }<p class="muted">@(Host.Capabilities.BackgroundAudio ? "Music keeps playing when you leave the app. Use the notification or lock-screen controls to manage playback." : "This build supports foreground listening. Use Offline for songs saved on this device.") Release validation remains pending.</p></details> }
+            </section>
+        }
+        @if (page == "activity")
+        {
+            @if (cleanupVerified && !cleanupPending && Playback.ListeningAccount is { } listeningAccount)
+            {
+                <ListeningActivityPage @key="listeningAccount" Account="listeningAccount" OnPrivacy='() => Navigate("settings")' OnSource="OpenHistorySource" />
+            }
+            else { <section class="listening-page"><h1>@PageTitle</h1><p>@(connecting ? "Restoring your account…" : "Connect your account to view listening saved on this device.")</p><ListeningIconButton Icon="user" Label="Connect Telegram account" OnClick='() => Navigate("account")' /></section> }
+        }
+        @if (page == "downloads") { <DownloadsPage OnStorage='() => Navigate("storage")' /> }
+        @if (page == "storage" && (Session.AccountId ?? offlineTracks.FirstOrDefault()?.Origin.AccountId) is { } storageAccount)
+        {
+            <StoragePage Account="storageAccount" OnBack="Back" OnOffline='() => Navigate("offline")' />
+        }
+        @if (page == "storage" && Session.AccountId is null && offlineTracks.Count == 0) { <section class="media-page"><h1>Storage</h1><p>Connect your account to manage its local storage.</p><button class="primary-button" @onclick='() => Navigate("account")'>Connect Telegram</button></section> }
+        @if (Session.AccountId is not null)
+        {
+            <div hidden='@(page != "channels")' class="channels-page">
+                <div class="screen-heading"><h1>Your sources</h1><p>Choose the sources. We'll bring the music.</p></div>
+                @if (sources.Count > 0) { <ChannelSyncPanel Progress="@Sync.Progress" Running="@Sync.IsRunning" Pending="@syncPending" Disabled="@busy" Error="@syncError" OnStart="StartSync" OnPause="PauseSync" /> }
+                @if (sources.Count == 0) {<ChannelCatalogPanel Progress="@Catalog.Progress" Running="@Catalog.IsRunning" Pending="@catalogPending" Error="@catalogError" OnStart="LoadChannels" OnPause="PauseDiscovery" /> }
+                <ChannelPicker Channels="@Catalog.Channels" Sources="@sources" IsBusy="@(busy || syncPending)" IsLoading="@(Catalog.IsRunning || catalogPending)" IsIndexing="@Sync.IsRunning" IndexingChatId="@indexingChat" UnindexingChatId="@unindexingChat" ErrorChatId="@indexErrorChat" Message="@(unindexMessage ?? channelMessage)" UnindexError="@unindexError" OnUnindex="Unindex" OnRefresh="RefreshSource" LoadError="@channelError" IndexError="@indexError" OnLoad="LoadChannels" OnIndex="Index" OnCancel="CancelIndex" />
+                @if (sources.Count > 0) {<ChannelCatalogPanel Progress="@Catalog.Progress" Running="@Catalog.IsRunning" Pending="@catalogPending" Error="@catalogError" OnStart="LoadChannels" OnPause="PauseDiscovery" /> }
+
+            </div>
+        }
+        @if (Session.AccountId is not null || Host.CanSaveOffline || Playback.CurrentTrack is not null)
+        {
+            <MusicLibrary @ref="music" SelectedSource="selectedChannel" HomeVisible='@(page == "home" && cleanupVerified && !cleanupPending)' ShowTransferSummary='@(page != "downloads")' OfflineCopies="@offlineCopies" OnDownloads='() => Navigate("downloads")' OnActivity='() => Navigate("activity")' OfflineTracks="@offlineTracks" OnOfflineChanged="OfflineChanged" OnMetadataChanged="MetadataChanged" Tracks="@(HasCurrentResults ? tracks : [])" LoadState="@libraryLoadState" LoadError="@libraryLoadError" LoadMoreFailed="retryLoadMore" OnRetry="() => LoadLibraryAsync(more: retryLoadMore)" Sources="@ViewSources" Playlist='@(libraryView == "playlist" ? ActivePlaylist : playlist)' Playlists="@AllPlaylists" OnPlaylistEdit="EditPlaylist" OnPlaylistSelect="SelectPlaylist" PlaylistSort="@playlistSort" OnPlaylistSort="SortPlaylist" ReadPlaylist="ReadPlaylistTracks" ReadOfflinePlaylist="ReadOfflinePlaylistSnapshot" ReadQueue="ReadQueueTrackIdsAsync" Busy="@busy" CanLoadMore="@(HasCurrentResults && canLoadMore)" Criteria="searchCriteria" OnSearch="SearchMusic" OnClearFilters="ClearSearchFilters" OnChannel="FilterChannel" OnLoadMore="LoadMoreMusic" OnFavorite="Favorite" OnAdd="TogglePlaylist" ShowContent='@(cleanupVerified && !cleanupPending && page is "tracks" or "search" or "favorites" or "playlist" or "offline")' View="@libraryView" ViewChanged="ChangeLibraryView" SearchMode='@(page == "search")' OnChannels='() => Navigate("channels")' BrowseSummary='@(GroupListing ? $"{browseGroups.Length} {browseMode} shown" : null)' BrowseResults='@(page == "search" && browseMode == "playlists" ? PlaylistResults : GroupListing ? GroupResults : null)' Display="Display" OnDisplay="ChangeDisplay" OnSaveFilter="() => saveFilterOpen = true" OnPinCollection="PinCurrentCollection" CanPinCollection="@(browseGroup is not null || page == "playlist")" BrowseContext="@DiscoveryContext" CollectionLabel='@(page is "tracks" or "offline" ? browseLabel : null)'>
+                <BrowseTools>
+                    @if (page == "search")
+                    { <div class="discovery-tabs" role="group" aria-label="Search result types">@foreach (var kind in new[] { "tracks", "artists", "albums", "playlists" }) { <button aria-pressed="@((browseMode == kind).ToString().ToLowerInvariant())" @onclick="() => SearchKind(kind)">@System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(kind)</button> }</div> }
+                    @if (libraryView != "playlist") { <DiscoveryToolbar Mode="@browseMode" Group='@(page is "tracks" or "offline" ? browseGroup : null)' ShowModes="false" Order="generalOrder" Disabled="@(busy || libraryLoadState is LibraryLoadState.Refreshing or LibraryLoadState.LoadingMore || tracks.Count == 0)" OnMode="ChangeBrowseMode" OnSort="ChangeGeneralOrder" OnPlay="PlayBrowse" /> }
+                </BrowseTools>
+
+            </MusicLibrary>
+        }
+        <LibraryDialog Open="saveFilterOpen" Title="Save filter" OnClose="() => saveFilterOpen = false">
+            <form @onsubmit="SaveFilter" @onsubmit:preventDefault><label for="saved-filter-name">Filter name</label><input id="saved-filter-name" @bind="filterName" maxlength="100" required /><button class="primary-button">Save filter</button></form>
+            @if (customizationError is not null) { <p role="alert">@customizationError</p> }
+        </LibraryDialog>
+        <footer class="app-footer"><span>ChannelWave</span><span>Your sources. Your music.</span><button class="subtle-button" @onclick='() => Navigate("account")'>Connection &amp; privacy</button></footer>
+    </main>
+    @if (Route.IsRoot) { <RootNavigation Mobile="true" Active="Route.Root" OnNavigate="Navigate" /> }
+    <div class="idle-player" aria-label="Player"><div class="mini-cover"><MusicIcon /></div><div><strong>Choose a song to start listening</strong></div><button class="icon-button" disabled aria-label="Play a song from your library"><MusicIcon Name="play" /></button></div>
+</div>
+</CascadingValue>
+</CascadingValue>
+}
+@code {
+    private async Task RestoreListeningAsync(long account)
+    {
+        await presentation.BindAsync(account, lifetime.Token);
+        if (disposed || cleanupPending || presentation.Account != account) return;
+        await Playback.BindListeningAsync(account, (id, ct) => PlaybackMedia.ResolveAsync(account, id, ct),
+            (track, ct) => PlaybackMedia.PrepareAsync(track, Playback.OfflineOnly, ct), lifetime.Token);
+        if (!disposed && !cleanupPending && Session.AccountId == account) await presentation.RememberAccountAsync(account, lifetime.Token);
+    }
+    private async Task OpenHistorySource(long chat)
+    {
+        var source = sources.FirstOrDefault(x => x.ChatId == chat);
+        if (source is null) { error = "This source is no longer in your library."; return; }
+        await OpenSource(source);
+    }
+    private string page = "home", libraryView = "all";
+    private bool focusPage, initializationComplete, navigationStarted, startupStarted, startupSessionChecked;
+    private long navigationVersion;
+    private IJSObjectReference? navigation;
+    private DotNetObjectReference<Diagnostic>? navigationReference;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!initializationComplete) return;
+        if (!navigationStarted)
+        {
+            navigationStarted = true;
+            var initialNavigation = navigationVersion;
+            navigation = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/ChannelWave.UI/navigation.js");
+            await navigation.InvokeVoidAsync("watchLayout");
+            navigationReference = DotNetObjectReference.Create(this);
+            await navigation.InvokeVoidAsync("watchActivity", navigationReference);
+            var initialPage = await navigation.InvokeAsync<string>("watchNavigation", navigationReference, page);
+            if (!cleanupPending && initialNavigation == navigationVersion && initialPage != page)
+            {
+                await Navigate(initialPage);
+                if (page == "home") homeTab = HomeState.SelectedTab;
+                StateHasChanged();
+            }
+            if (page == "home" && Session.Authorization.State is "phone" or "code" or "password" or "email" or "emailCode")
+            {
+                page = "account"; focusPage = true; StateHasChanged();
+            }
+        }
+        if (!startupStarted && cleanupVerified && !cleanupPending)
+        {
+            startupStarted = true;
+            startupConnection = RestoreStartupAsync();
+        }
+        if (navigation is not null) await navigation.InvokeVoidAsync("recordPage", CurrentRoute);
+        if (focusHomeTab && navigation is not null)
+        {
+            focusHomeTab = false;
+            await navigation.InvokeVoidAsync("focusHomeTab", homeTab);
+        }
+        if (!focusPage) return;
+        focusPage = false;
+        navigation ??= await JS.InvokeAsync<IJSObjectReference>("import", "./_content/ChannelWave.UI/navigation.js");
+        await navigation.InvokeVoidAsync("focusPage");
+    }
+    private long? HomeAccount => cleanupVerified && !cleanupPending ? Session.AccountId ?? Playback.ListeningAccount : null;
+    private string PageTitle => page switch { "library" => "Library", "settings" => "Settings", "playlists" => "Playlists", "customize" => "Edit tabs", "about" => "About ChannelWave", "offline" => "Offline", "downloads" => "Downloads", "storage" => "Storage", "activity" => "Listening activity", "home" => "Home", "search" => "Search", "tracks" => "Your Library", "favorites" => "Liked Songs", "playlist" => ActivePlaylist.Name, "channels" => "Your sources", _ => "Account" };
+    [JSInvokable]
+    public async Task SetActivityAsync(bool active)
+    {
+        if (disposed || cleanupPending || Session.AccountId is null) return;
+        try
+        {
+            if (active) await Sync.RestoreAsync(lifetime.Token);
+            else await Sync.PauseAsync(preserveResume: true);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        catch (Exception e) { syncError = Td.SafeError(e); }
+    }
+    [JSInvokable]
+    public async Task RestorePageAsync(string destination)
+    {
+        if (disposed || destination.Split('~')[0] is not ("home" or "library" or "settings" or "customize" or "playlists" or "about" or "profile" or "search" or "tracks" or "favorites" or "playlist" or "offline" or "channels" or "account" or "downloads" or "storage" or "activity" or "history" or "statistics")) return;
+        if (!destination.Contains('~') && destination is "tracks" or "search" or "favorites" or "offline")
+            ApplyBrowseState(new("tracks", null, null, LibraryOrder.AddedNewest, new(), null));
+        await Navigate(destination);
+        StateHasChanged();
+    }
+    private async Task Navigate(string destination)
+    {
+        if (navigation is not null) { await navigation.InvokeVoidAsync("captureHomeScroll"); await navigation.InvokeVoidAsync("capturePage"); }
+        navigationVersion++;
+        var route = destination.Split('~', 2); destination = route[0] == "profile" ? "account" : route[0] == "library" && route.Length == 2 ? "tracks" : route[0];
+        if (destination is "history" or "statistics") destination = "activity";
+        if (route.Length == 2)
+        {
+            try { if (JsonSerializer.Deserialize<BrowsePreferences>(Uri.UnescapeDataString(route[1])) is { } state) { ApplyBrowseState(state); routeHasBrowse = true; } }
+            catch (Exception e) when (e is JsonException or ArgumentException) { browseMode = "tracks"; browseGroup = browseLabel = null; }
+        }
+        if (destination == "tracks" && Session.AccountId is null && startupSessionChecked && !connecting && Session.Authorization.State == "idle" && Host.CanSaveOffline) destination = "offline";
+        page = destination;
+        focusPage = true;
+        libraryView = destination switch { "favorites" => "favorites", "playlist" => "playlist", "offline" => "offline", _ => "all" };
+        if (route.Length == 1)
+        {
+            selectedChannel = null; searchCriteria = new(); savedFilterId = null;
+            if (destination == "home") homeTab = HomeState.SelectedTab;
+            if (destination is "tracks" or "search" or "favorites" or "offline")
+            { browseMode = "tracks"; browseGroup = browseLabel = null; generalOrder = LibraryOrder.AddedNewest; }
+        }
+        restoredItemLimit = navigation is null ? 100 : await navigation.InvokeAsync<int>("restoredLoaded");
+        loadedLimit = restoredItemLimit;
+        if (music is not null) await music.ResetAsync(clearSearch: route.Length == 1 && destination != "search", notify: false);
+        if (music is not null && selectedChannel is { } restoredSource) await music.FilterSource(restoredSource, notify: false);
+        if (destination is "tracks" or "search" or "favorites" or "playlist" or "offline" || overview is null || destination == "library" && presentationDirty || presentation.Account != (Session.AccountId ?? Playback.ListeningAccount)) await LoadLibraryAsync();
+    }
+    private async Task ChangeLibraryView(string value) { navigationVersion++; if (value == "all") { browseMode = "tracks"; browseGroup = browseLabel = null; if (generalOrder == LibraryOrder.Album) generalOrder = LibraryOrder.AddedNewest; } libraryView = value; page = value switch { "favorites" => "favorites", "playlist" => "playlist", "offline" => "offline", _ => "tracks" }; loadedLimit = 100; focusPage = true; await LoadLibraryAsync(); }
+    private async Task OpenSource(Source source)
+    {
+        // Select the destination and source before the first refresh. Publishing
+        // an intermediate unfiltered library races background refreshes and focus.
+        navigationVersion++; page = "tracks"; libraryView = "all"; focusPage = true; browseMode = "tracks"; browseGroup = browseLabel = null;
+        searchCriteria = new(); selectedChannel = source.ChatId; loadedLimit = 100;
+        if (music is not null)
+        {
+            await music.ResetAsync(clearSearch: true, notify: false);
+            await music.FilterSource(source.ChatId, notify: false);
+        }
+        await LoadLibraryAsync();
+    }
+    private Task FilterChannel(long? chat) { selectedChannel = chat; loadedLimit = 100; return LoadLibraryAsync(); }
+    private static string Initial(string name) => string.IsNullOrWhiteSpace(name) ? "#" : System.Globalization.StringInfo.GetNextTextElement(name.Trim());
+    private bool busy; private string? error, status; private string input = "";
+    private LibrarySearchCriteria searchCriteria = new();
+    private bool connecting;
+    private LibraryLoadState libraryLoadState;
+    private string? libraryLoadError;
+    private long libraryLoadVersion;
+    private long? libraryLoadAccount;
+    private bool libraryRefreshPending;
+    private sealed record LibraryContext(long? Account, string View, long? Chat, Guid? Playlist, PlaylistSort Sort, LibrarySearchCriteria Criteria, LibraryOrder Order, string Mode, string? Group, string Page);
+    private LibraryContext? loadedContext;
+    private LibraryContext CurrentContext => new(Session.AccountId ?? Playback.ListeningAccount, libraryView, selectedChannel, selectedPlaylist, playlistSort, searchCriteria, generalOrder, browseMode, browseGroup, page);
+    private bool HasCurrentResults => loadedContext == CurrentContext || libraryLoadState == LibraryLoadState.Refreshing
+        && loadedContext is { } previous && (previous with { Criteria = searchCriteria }) == CurrentContext;
+    private CancellationTokenSource? libraryReadCancellation;
+    private long? searchAccount;
+    private string? busyLabel;
+    private Task startupConnection = Task.CompletedTask, workerRestore = Task.CompletedTask;
+    private bool retryLoadMore;
+    private MusicLibrary? music; private bool canLoadMore; private int loadedLimit = 100;
+    private long? selectedChannel; private long refreshVersion;
+    private long? indexingChat, indexErrorChat;
+    private long? unindexingChat; private string? unindexMessage, unindexError;
+    private string? channelMessage, channelError, indexError;
+    private CancellationTokenSource? indexCancellation;
+    private bool syncPending; private string? syncError; private long? restoredSyncAccount;
+    private bool catalogPending; private string? catalogError;
+    private bool disposed; private Task syncRefresh = Task.CompletedTask;
+    private bool cleanupPending, logoutPrepared, logoutClosed, libraryCleared, sessionCleared, remoteLogout;
+    private const string CleanupKey = "pending-signout-v1";
+    private bool cleanupCheckpointSaved;
+    private string? cleanupCheckpointPhase;
+    private bool cleanupRecovery;
+    private bool restoringCleanup = true;
+    private bool cleanupVerified;
+    private long? cleanupAccount;
+    private IReadOnlyList<Track> offlineTracks = [];
+    private IReadOnlyList<OfflineCopy> offlineCopies = [];
+    private readonly HashSet<Guid> observedCompletedSaves = [];
+    private Task transferRefresh = Task.CompletedTask;
+    private Task OfflineChanged() => Run(async () => { offlineCopies = await Host.OfflineCopiesAsync(Session.AccountId, lifetime.Token); HomeState.Invalidate(); await Refresh(); });
+    private Task MetadataChanged(Track track) { HomeState.UpdateTracks([track]); return Refresh(); }
+    private readonly Dictionary<Guid, Track> pendingMetadata = [];
+    private bool backgroundRefreshPending, libraryRefreshRequired, homeRefreshRequired, presentationDirty;
+    private int lastSyncPages;
+    private void BackgroundMetadataChanged(Track track)
+    {
+        if (!disposed) _ = InvokeAsync(() =>
+        {
+            if (disposed || cleanupPending || Session.AccountId != track.Origin.AccountId) return;
+            pendingMetadata[track.Id] = track;
+            libraryRefreshRequired = true;
+            ScheduleBackgroundRefresh();
+        });
+    }
+    private IReadOnlyList<Source> sources = []; private IReadOnlyList<Track> tracks = [];
+    private IReadOnlyList<Source> ViewSources => libraryView == "offline"
+        ? offlineTracks.GroupBy(t => t.Origin.ChatId).Select(g => new Source(g.First().Origin.AccountId, g.Key, g.First().Origin.SourceName)).ToArray()
+        : sources;
+    private Playlist playlist = Playlists.Create("Listening list"); private CancellationTokenSource lifetime = new();
+    protected override async Task OnInitializedAsync()
+    {
+        presentation = new(Library); presentation.Changed += PresentationChanged;
+        homeTab = HomeState.SelectedTab;
+        Transfers.Changed += TransfersChanged;
+        Session.Changed += Changed; Sync.SourceReconciled += SourceReconciled; Sync.Changed += SyncChanged; Catalog.Changed += BackgroundProgressChanged;
+        Playback.Changed += PlaybackChanged; Playback.PersistenceChanged += ListeningChanged; MetadataScanner.Changed += BackgroundProgressChanged; MetadataScanner.TrackChanged += BackgroundMetadataChanged;
+        busy = true;
+        try
+        {
+            await RestoreCleanupAsync();
+            if (!cleanupPending && Host.CanSaveOffline)
+            {
+                offlineCopies = await Host.OfflineCopiesAsync(null, lifetime.Token);
+                offlineTracks = offlineCopies.Select(c => c.Track).ToArray();
+                await Transfers.BindAsync(Session.AccountId ?? offlineTracks.FirstOrDefault()?.Origin.AccountId, lifetime.Token);
+            }
+            restoringCleanup = false;
+        }
+        catch (Exception e) { error = Td.SafeError(e); }
+        finally { restoringCleanup = false; busy = false; initializationComplete = true; }
+    }
+    private async Task RestoreStartupAsync()
+    {
+        try
+        {
+            if (navigation is not null) await navigation.InvokeVoidAsync("afterPaint");
+            if (disposed || cleanupPending) return;
+            if (Session.AccountId is { } readyAccount)
+            {
+                await RestoreListeningAsync(readyAccount);
+                if (loadedContext != CurrentContext && libraryLoadState == LibraryLoadState.Idle) await LoadLibraryAsync();
+                QueueWorkerRestore();
+            }
+            else if (Session.Authorization.State == "idle")
+            {
+                var saved = await Host.HasSavedSessionAsync(lifetime.Token);
+                startupSessionChecked = true;
+                if (disposed || cleanupPending || Session.Authorization.State != "idle") return;
+                if (saved)
+                {
+                    connecting = true;
+                    await InvokeAsync(StateHasChanged);
+                    await RestoreSessionAsync();
+                }
+                else if (page == "tracks" && Host.CanSaveOffline) await Navigate("offline");
+            }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        catch (Exception e) { if (!disposed) { error = Td.SafeError(e); await InvokeAsync(StateHasChanged); } }
+        finally
+        {
+            startupSessionChecked = true;
+            if (!cleanupPending && Playback.ListeningAccount is null && Session.AccountId is null && Session.Authorization.State is "idle" or "closed")
+            {
+                var marker = await Library.ReadStateAsync(0, "last-listening-account-v1", lifetime.Token);
+                if (long.TryParse(marker, out var localAccount) && localAccount > 0)
+                {
+                    await RestoreListeningAsync(localAccount);
+                    if (loadedContext != CurrentContext) await LoadLibraryAsync();
+                    await InvokeAsync(StateHasChanged);
+                }
+            }
+        }
+    }
+    private void QueueWorkerRestore()
+    {
+        if (Session.AccountId is not { } account || loadedContext?.Account != account || restoredSyncAccount == account) return;
+        if (page == "account") { page = sources.Count == 0 ? "channels" : "tracks"; focusPage = true; }
+        restoredSyncAccount = account;
+        workerRestore = RestoreWorkersAsync(account);
+    }
+    private async Task RestoreWorkersAsync(long account)
+    {
+        try
+        {
+            if (navigation is not null) await navigation.InvokeVoidAsync("afterPaint");
+            if (disposed || cleanupPending || Session.AccountId != account) return;
+            try { await MetadataScanner.RestoreAsync(lifetime.Token); }
+            catch (Exception e) when (e is not OperationCanceledException && Session.AccountId == account) { syncError = Td.SafeError(e); }
+            await Transfers.BindAsync(account, lifetime.Token);
+            try { await Storage.TrimAsync(account, false, lifetime.Token); }
+            catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { throw; }
+            catch (Exception e) { error = "Temporary cache cleanup could not finish. " + Td.SafeError(e); }
+            await Catalog.RestoreAsync(lifetime.Token);
+            if (disposed || cleanupPending || Session.AccountId != account) return;
+            await Sync.RestoreAsync(lifetime.Token);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested || Session.AccountId != account) { }
+        catch (Exception e) { if (!disposed && Session.AccountId == account) syncError = Td.SafeError(e); }
+        if (!disposed) await InvokeAsync(StateHasChanged);
+    }
+    private async Task RestoreSessionAsync()
+    {
+        var ct = lifetime.Token;
+        try { await Session.ConnectAsync(await Host.ConfigurationAsync(), ct); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception e) { if (!disposed) error = Td.SafeError(e); }
+        finally
+        {
+            connecting = false;
+            if (!disposed) await InvokeAsync(StateHasChanged);
+        }
+    }
+    private async Task RestoreCleanupAsync()
+    {
+        cleanupVerified = false;
+        await Library.InitializeAsync(lifetime.Token);
+        // Account zero is reserved for app lifecycle metadata, outside account erasure.
+        var stored = await Library.ReadStateAsync(0, CleanupKey, lifetime.Token);
+        if (stored is not null && JsonSerializer.Deserialize<CleanupCheckpoint>(stored) is { } checkpoint)
+        {
+            if (checkpoint.Account <= 0) throw new InvalidDataException("The pending cleanup account is invalid.");
+            if (checkpoint.Phase is not (null or "requested" or "closed")) throw new InvalidDataException("The pending cleanup phase is invalid.");
+            cleanupAccount = checkpoint.Account; remoteLogout = checkpoint.RemoteLogout;
+            cleanupPending = cleanupCheckpointSaved = cleanupRecovery = true;
+            // Checkpoints written before phases were introduced always followed TDLib closure.
+            logoutPrepared = logoutClosed = checkpoint.Phase is null or "closed";
+            cleanupCheckpointPhase = logoutClosed ? "closed" : "requested";
+            page = "account";
+        }
+        if (cleanupPending) HomeState.Bind(null);
+        cleanupVerified = true;
+    }
+    private Task VerifyCleanup() => Run(async () => { await RestoreCleanupAsync(); await Refresh(); });
+    private void TransfersChanged()
+    {
+        if (disposed || cleanupPending) return;
+        _ = InvokeAsync(async () =>
+        {
+            if (disposed || cleanupPending) return;
+            StateHasChanged();
+            var completed = Transfers.Jobs.Where(j => j.State is TransferState.Completed or TransferState.ReadyToExport).Select(j => j.Id).ToArray();
+            if (!completed.Any(id => !observedCompletedSaves.Contains(id))) return;
+            foreach (var id in completed) observedCompletedSaves.Add(id);
+            transferRefresh = RefreshTransfersAsync(transferRefresh);
+            await transferRefresh;
+        });
+    }
+    private async Task RefreshTransfersAsync(Task previous)
+    {
+        try
+        {
+            await previous;
+            if (disposed || cleanupPending) return;
+            offlineCopies = await Host.OfflineCopiesAsync(Session.AccountId, lifetime.Token);
+            HomeState.Invalidate(); await Refresh();
+            if (Session.AccountId is { } account) await Storage.TrimAsync(account, false, lifetime.Token);
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        catch (Exception e) { if (!disposed) error = Td.SafeError(e); }
+    }
+    private void ListeningChanged()
+    {
+        if (!disposed) _ = InvokeAsync(() =>
+        {
+            if (disposed || cleanupPending) return;
+            HomeState.Invalidate("recent"); StateHasChanged();
+        });
+    }
+    private Guid? lastTrimmedPlayback;
+    private void PlaybackChanged()
+    {
+        if (disposed) return;
+        _ = InvokeAsync(async () =>
+        {
+            if (disposed || cleanupPending) return;
+            StateHasChanged();
+            if (!Playback.IsPreparing && Playback.CanResume && Playback.SelectedTrack != lastTrimmedPlayback)
+            {
+                lastTrimmedPlayback = Playback.SelectedTrack;
+                try { if (Session.AccountId is { } account) await Storage.TrimAsync(account, false, lifetime.Token); }
+                catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+                catch (Exception e) { if (!disposed) error = Td.SafeError(e); }
+            }
+        });
+    }
+    private sealed record CleanupCheckpoint(long Account, bool RemoteLogout, string? Phase = null);
+    private object? sessionSignature;
+    private void Changed()
+    {
+        _ = InvokeAsync(async () =>
+        {
+            if (disposed) return;
+            if (cleanupPending) { StateHasChanged(); return; }
+            object signature = (Session.AccountId, Session.Authorization.State, Session.Identity, Session.Error);
+            if (Equals(sessionSignature, signature)) return;
+            sessionSignature = signature;
+            var owner = Session.AccountId ?? Playback.ListeningAccount;
+            if (HomeState.Account != owner) { HomeState.Bind(owner); homeTab = HomeState.SelectedTab; }
+            if (searchAccount != Session.AccountId)
+            {
+                var restoringBrowse = searchAccount is null && Session.AccountId is { } restoringAccount
+                    && (browseAccount == restoringAccount || browseAccount is null && routeHasBrowse);
+                searchAccount = Session.AccountId;
+                if (!restoringBrowse)
+                {
+                    searchCriteria = new(); selectedChannel = null;
+                    if (music is not null) await music.ResetAsync(clearSearch: true, notify: false);
+                }
+            }
+            if (libraryLoadState != LibraryLoadState.Idle && libraryLoadAccount != Session.AccountId) InvalidateLibraryLoad();
+            if (Session.AccountId is { } account && !lifetime.IsCancellationRequested)
+            {
+                await RestoreListeningAsync(account);
+                await Transfers.BindAsync(account, lifetime.Token);
+                if (loadedContext != CurrentContext && libraryLoadState == LibraryLoadState.Idle) await LoadLibraryAsync();
+                await CacheProfileIdentityAsync(account, lifetime.Token);
+                if (restoredSyncAccount != account && loadedContext?.Account == account)
+                {
+                    if (page == "account") page = sources.Count == 0 ? "channels" : "tracks";
+                    QueueWorkerRestore();
+                }
+            }
+            else if (Session.Authorization.State is "phone" or "code" or "password" or "email" or "emailCode")
+            {
+                if (page == "home") { page = "account"; focusPage = true; }
+            }
+            else if (Session.Authorization.State is "closed" or "loggingOut")
+            {
+                await Catalog.PauseAsync(preserveResume: true); await Sync.PauseAsync(preserveResume: true);
+                InvalidateLibraryLoad(); restoredSyncAccount = null; tracks = []; sources = []; ResetPlaylists();
+                await Playback.StopAsync();
+            }
+            StateHasChanged();
+        });
+    }
+    private readonly HashSet<(long Account, long Chat)> pendingSources = [];
+    private void SourceReconciled(long account, long chat)
+    {
+        if (!disposed) _ = InvokeAsync(() =>
+        {
+            if (disposed || cleanupPending || Session.AccountId != account) return;
+            pendingSources.Add((account, chat)); libraryRefreshRequired = homeRefreshRequired = true; ScheduleBackgroundRefresh();
+        });
+    }
+    private void SyncChanged()
+    {
+        if (!disposed) _ = InvokeAsync(() =>
+        {
+            if (disposed || cleanupPending) return;
+            var progress = Sync.Progress;
+            var changed = progress.Pages != lastSyncPages;
+            libraryRefreshRequired |= changed; homeRefreshRequired |= changed;
+            lastSyncPages = progress.Pages;
+            if (changed) ScheduleBackgroundRefresh();
+            else if (page == "channels") StateHasChanged();
+        });
+    }
+    private void BackgroundProgressChanged()
+    {
+        if (!disposed) _ = InvokeAsync(() => { if (!disposed && !cleanupPending) ScheduleBackgroundRefresh(); });
+    }
+    private void ScheduleBackgroundRefresh()
+    {
+        backgroundRefreshPending = true;
+        if (!syncRefresh.IsCompleted) return;
+        syncRefresh = FlushBackgroundChangesAsync();
+    }
+    private async Task FlushBackgroundChangesAsync()
+    {
+        try
+        {
+            while (backgroundRefreshPending && !disposed && !cleanupPending)
+            {
+                backgroundRefreshPending = false;
+                await Task.Delay(250, lifetime.Token);
+                if (disposed || cleanupPending) return;
+                using var activity = libraryRefreshActivity.StartActivity("Refresh after background changes");
+                var sourceChanges = pendingSources.ToArray(); pendingSources.Clear();
+                foreach (var source in sourceChanges) await Playback.ReconcileSourceAsync(source.Account, source.Chat, lifetime.Token);
+                var updates = pendingMetadata.Values.Where(t => t.Origin.AccountId == Session.AccountId).ToDictionary(t => t.Id);
+                pendingMetadata.Clear();
+                if (updates.Count > 0)
+                {
+                    if (tracks.Any(t => updates.ContainsKey(t.Id))) tracks = tracks.Select(t => updates.GetValueOrDefault(t.Id, t)).ToArray();
+                    if (offlineTracks.Any(t => updates.ContainsKey(t.Id))) offlineTracks = offlineTracks.Select(t => updates.GetValueOrDefault(t.Id, t)).ToArray();
+                    foreach (var track in updates.Values) music?.UpdatePresentedTrack(track);
+                    HomeState.UpdateTracks(updates.Values, automatic: true);
+                }
+                var refresh = libraryRefreshRequired; libraryRefreshRequired = false;
+                var refreshHome = homeRefreshRequired; homeRefreshRequired = false;
+                if (refresh)
+                {
+                    if (refreshHome) HomeState.Invalidate();
+                    if (refreshHome || page is "tracks" or "search" or "favorites" or "playlist" or "offline" or "library") await Refresh();
+                    else presentationDirty = true;
+                }
+                if (Sync.Progress.Phase is "completed" or "paused" or "failed") channelMessage = null;
+                StateHasChanged();
+            }
+        }
+        catch (OperationCanceledException) when (disposed || lifetime.IsCancellationRequested) { }
+        catch (Exception e) { if (!disposed) { syncError = Td.SafeError(e); StateHasChanged(); } }
+    }
+    private static readonly System.Diagnostics.ActivitySource libraryRefreshActivity = new("ChannelWave.UI.Library");
+    private Task ToggleMetadata() => Run(() => MetadataScanner.SetEnabledAsync(!MetadataScanner.Enabled, lifetime.Token));
+    private Task RetryMetadata() => Run(() => MetadataScanner.RetryFailedAsync(lifetime.Token));
+    private async Task StartSync() { syncPending = true; syncError = null; try { await Sync.StartAsync(lifetime.Token); } catch (Exception e) { syncError = Td.SafeError(e); } finally { syncPending = false; } }
+    private async Task PauseSync() { syncPending = true; syncError = null; try { await Sync.PauseAsync(); } catch (Exception e) { syncError = Td.SafeError(e); } finally { syncPending = false; } }
+    private async Task PauseDiscovery() { catalogPending = true; catalogError = null; try { await Catalog.PauseAsync(); } catch (Exception e) { catalogError = Td.SafeError(e); } finally { catalogPending = false; } }
+    private async Task Run(Func<Task> work, string? label = null) { busy = true; busyLabel = label; error = null; try { await work(); } catch (Exception e) { error = Td.SafeError(e); } finally { busy = false; busyLabel = null; } }
+    private Task Probe() => Run(async () => { if (!cleanupPending) await RestoreCleanupAsync(); if (cleanupPending) throw new InvalidOperationException("Finish sign-out cleanup before starting Telegram."); status = await Session.ProbeAsync(lifetime.Token); });
+    private Task Connect() { if (connecting) return Task.CompletedTask; navigationVersion++; page = "account"; return Run(async () => { if (!cleanupPending) await RestoreCleanupAsync(); if (cleanupPending) throw new InvalidOperationException("Finish sign-out cleanup before reconnecting."); status = null; await Session.ConnectAsync(await Host.ConfigurationAsync(), lifetime.Token); }, "Connecting to Telegram…"); }
+    private Task RetryAccount() => Run(() => Session.RetryAccountInitializationAsync(), "Loading your Telegram account…");
+    private Task Submit() => Run(async () => { await Session.SubmitAsync(input, lifetime.Token); input = ""; }, "Connecting to Telegram…");
+    private async Task LoadChannels()
+    {
+        catalogPending = true; catalogError = null;
+        try { await Catalog.StartAsync(lifetime.Token); }
+        catch (Exception e) { catalogError = Td.SafeError(e); }
+        finally { catalogPending = false; }
+    }
+    private void InvalidateLibraryLoad()
+    {
+        libraryReadCancellation?.Cancel(); libraryReadCancellation = null;
+        ++libraryLoadVersion; ++refreshVersion;
+        libraryLoadState = LibraryLoadState.Idle;
+        libraryLoadError = null;
+        libraryRefreshPending = false;
+        loadedContext = null;
+    }
+    private async Task LoadLibraryAsync(bool more = false, bool searchOnly = false, bool background = false)
+    {
+        var refreshBeforeMore = more && libraryRefreshPending;
+        libraryRefreshPending = false;
+        libraryReadCancellation?.Cancel();
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        libraryReadCancellation = cancellation;
+        var owner = ++libraryLoadVersion;
+        libraryLoadAccount = Session.AccountId;
+        libraryLoadState = more ? LibraryLoadState.LoadingMore
+            : background && loadedContext == CurrentContext && libraryLoadError is null
+                ? LibraryLoadState.BackgroundRefreshing : LibraryLoadState.Refreshing;
+        if (cleanupVerified) error = null;
+        libraryLoadError = null; retryLoadMore = false;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            if (refreshBeforeMore) await RefreshCore(cancellation.Token);
+            if (!refreshBeforeMore || canLoadMore) await RefreshCore(cancellation.Token, searchOnly, more);
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { }
+        catch (Exception e) { if (!disposed && owner == libraryLoadVersion) { libraryLoadError = Td.SafeError(e); retryLoadMore = more; } }
+        finally
+        {
+            if (owner == libraryLoadVersion)
+            {
+                libraryReadCancellation = null;
+                libraryLoadState = LibraryLoadState.Idle;
+                // A navigation load can supersede the authorization-triggered read.
+                // Restore workers after whichever account-scoped read actually commits.
+                if (!disposed && libraryLoadError is null) QueueWorkerRestore();
+                if (!disposed) await InvokeAsync(StateHasChanged);
+                if (libraryRefreshPending && libraryLoadError is null && !disposed && owner == libraryLoadVersion)
+                {
+                    libraryRefreshPending = false;
+                    try { await Refresh(); }
+                    catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+                    catch (Exception e) { if (!disposed && owner == libraryLoadVersion) libraryLoadError = Td.SafeError(e); }
+                    if (!disposed) await InvokeAsync(StateHasChanged);
+                }
+            }
+        }
+    }
+    // Coalesce updates behind the current foreground read without losing the last
+    // indexing/save event, which may be the only event for a completed operation.
+    private Task Refresh()
+    {
+        if (libraryLoadState == LibraryLoadState.Idle) return LoadLibraryAsync(background: true);
+        libraryRefreshPending = true;
+        return Task.CompletedTask;
+    }
+    private async Task RefreshCore(CancellationToken ct = default, bool searchOnly = false, bool more = false)
+    {
+        if (ct == default) ct = lifetime.Token;
+        if (cleanupPending || restoringCleanup || disposed) return;
+        if (!cleanupVerified) { await RestoreCleanupAsync(); if (cleanupPending) return; }
+        if ((Session.AccountId ?? Playback.ListeningAccount) is null && libraryView != "offline") return;
+        var version = ++refreshVersion;
+        if ((Session.AccountId ?? Playback.ListeningAccount) is { } browseOwner) await RestoreBrowseAsync(browseOwner, ct);
+        if (disposed || cleanupPending || version != refreshVersion) return;
+        if (CurrentContext.Account is { } collectionAccount && playlistAccount != collectionAccount)
+        {
+            var selection = playlistAccount is null ? selectedPlaylist : null;
+            var sort = playlistAccount is null ? playlistSort : PlaylistSort.Custom;
+            ResetPlaylists();
+            selectedPlaylist = selection; playlistSort = sort; playlistAccount = collectionAccount;
+        }
+        var context = CurrentContext;
+        var sessionAccount = context.Account;
+        var reuseCollections = (searchOnly || more) && loadedContext is not null && loadedContext.Account == sessionAccount;
+        var currentQuery = context.Criteria; var currentView = context.View; var chat = context.Chat;
+        var limit = more ? 100 : loadedLimit; var offset = more ? GroupListing ? browseGroups.Length : tracks.Count : 0;
+        bool IsCurrent() => !disposed && !cleanupPending && version == refreshVersion
+            && context == CurrentContext && !ct.IsCancellationRequested && !lifetime.IsCancellationRequested;
+        var saved = reuseCollections ? offlineTracks : Host.CanSaveOffline ? await Host.OfflineTracksAsync(sessionAccount, ct) : [];
+        if (currentView == "offline" && Host.CanSaveOffline)
+        {
+            var copies = await Host.OfflineCopiesAsync(sessionAccount, ct);
+            if (!IsCurrent()) return;
+            offlineCopies = copies;
+            saved = copies.Select(c => c.Track).ToArray();
+        }
+        if (!IsCurrent()) return;
+        if (currentView == "offline")
+        {
+            var selectedSources = reuseCollections ? sources : sessionAccount is { } connectedAccount ? await Library.SourcesAsync(connectedAccount, ct) : [];
+            if (!IsCurrent()) return;
+            if (!reuseCollections && sessionAccount is { } sourceAccount)
+            {
+                await presentation.ReconcileSourceTabsAsync(sourceAccount, selectedSources);
+                if (!IsCurrent()) return;
+            }
+            var matches = LibrarySearch.Filter(saved, DiscoveryRequest(context, offlineCopies.Where(c => c.Health == OfflineHealth.Saved).Select(c => c.Track.Id).ToArray(), offset, limit + 1), ct);
+            offlineTracks = saved; PublishTracks(matches, limit, more);
+            sources = selectedSources; loadedContext = context;
+            return;
+        }
+        if (sessionAccount is not { } account) return;
+        if (!more && !searchOnly) await RefreshPresentationAsync(account, ct);
+        var refreshedSources = reuseCollections ? sources : await Library.SourcesAsync(account, ct);
+        if (!IsCurrent()) return;
+        if (!reuseCollections)
+        {
+            await presentation.ReconcileSourceTabsAsync(account, refreshedSources);
+            if (!IsCurrent()) return;
+        }
+        var savedList = playlist; var savedLists = playlists;
+        if (!reuseCollections)
+        {
+            var stored = await Library.ReadStateAsync(account, "playlist", ct);
+            if (stored is not null)
+            {
+                if (parsedPlaylist is { } cached && cached.Account == account && cached.Json == stored) savedList = cached.Value;
+                else
+                {
+                    savedList = JsonSerializer.Deserialize<Playlist>(stored) ?? Playlists.Create("Listening list");
+                    savedList = savedList with { Tracks = savedList.Tracks.Distinct().ToArray() };
+                    parsedPlaylist = (account, stored, savedList);
+                }
+            }
+            else await presentation.WriteAccountStateAsync(account, "playlist", JsonSerializer.Serialize(savedList), ct);
+            var storedLists = await Library.ReadStateAsync(account, "playlists", ct);
+            if (storedLists is null) savedLists = [];
+            else if (parsedPlaylists is { } cachedLists && cachedLists.Account == account && cachedLists.Json == storedLists) savedLists = cachedLists.Value;
+            else { savedLists = JsonSerializer.Deserialize<Playlist[]>(storedLists) ?? []; parsedPlaylists = (account, storedLists, savedLists); }
+        }
+        if (page is not ("tracks" or "search" or "favorites" or "playlist" or "offline"))
+        {
+            if (!IsCurrent()) return;
+            offlineTracks = saved; sources = refreshedSources; playlist = savedList; playlists = savedLists;
+            loadedContext = context;
+            return;
+        }
+        var activeList = savedLists.FirstOrDefault(p => p.Id == context.Playlist)
+            ?? (context.Playlist is null || context.Playlist == savedList.Id ? savedList : new(context.Playlist.Value, "Unavailable playlist", []));
+        var savedIds = currentQuery.SavedOnly
+            ? (await Host.OfflineCopiesAsync(account, ct)).Where(c => c.Health == OfflineHealth.Saved).Select(c => c.Track.Id).ToArray()
+            : null;
+        var request = DiscoveryRequest(context, savedIds, offset, limit + 1) with { Playlist = currentView == "playlist" ? activeList.Tracks : null };
+        if (GroupListing)
+        {
+            var groups = await Library.GroupsAsync(account, request, browseMode, ct);
+            var covers = more ? new Dictionary<Guid, Track>(groupCovers) : new Dictionary<Guid, Track>();
+            foreach (var group in groups.Take(limit))
+            {
+                if (!IsCurrent()) return;
+                if (await Library.TrackAsync(account, group.ArtworkTrack, ct) is { } cover) covers[cover.Id] = cover;
+            }
+            if (!IsCurrent()) return;
+            canLoadMore = groups.Length > limit; browseGroups = (more ? browseGroups.Concat(groups.Take(limit)) : groups.Take(limit)).DistinctBy(g => g.Key).ToArray();
+            groupCovers = covers; loadedLimit = Math.Max(100, browseGroups.Length); tracks = []; sources = refreshedSources;
+            playlist = savedList; playlists = savedLists; offlineTracks = saved; loadedContext = context;
+            await Library.SaveStateAsync(account, "library-browse-v1", JsonSerializer.Serialize(BrowseState), ct);
+            return;
+        }
+        var refreshed = await Library.SearchAsync(account, request, ct);
+        if (!IsCurrent()) return;
+        offlineTracks = saved; sources = refreshedSources; playlist = savedList; playlists = savedLists;
+        PublishTracks(refreshed, limit, more); loadedContext = context;
+        await Library.SaveStateAsync(account, "library-browse-v1", JsonSerializer.Serialize(BrowseState), ct);
+    }
+    private void PublishTracks(IReadOnlyList<Track> pageTracks, int limit, bool append)
+    {
+        canLoadMore = pageTracks.Count > limit;
+        var page = pageTracks.Take(limit);
+        tracks = (append ? tracks.Concat(page) : page).DistinctBy(t => (t.Origin.AccountId, t.Id)).ToArray();
+        loadedLimit = Math.Max(100, tracks.Count);
+    }
+    private async Task Index(Source channel)
+    {
+        if (busy) return;
+        busy = true; indexingChat = channel.ChatId; indexError = null; indexErrorChat = null; unindexMessage = unindexError = null;
+        channelMessage = sources.Any(x => x.ChatId == channel.ChatId)
+            ? $"Loading older audio from {channel.Name}…" : $"Adding audio from {channel.Name}…";
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        indexCancellation = cancellation;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var source = sources.FirstOrDefault(x => x.ChatId == channel.ChatId) ?? channel;
+            await Sync.SelectAsync(source, cancellation.Token);
+            await Refresh(); channelMessage = $"Audio indexing is queued for {channel.Name}.";
+        }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { channelMessage = "Indexing canceled. Your previously saved audio is still in the library."; }
+        catch (Exception e) { indexErrorChat = channel.ChatId; indexError = Td.SafeError(e); channelMessage = null; }
+        finally { indexCancellation = null; indexingChat = null; busy = false; }
+    }
+    private async Task Unindex(Source channel)
+    {
+        if (busy) return;
+        busy = true; unindexingChat = channel.ChatId; unindexError = null; indexError = null;
+        unindexMessage = $"Unindexing {channel.Name}…";
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            await MetadataScanner.SuspendAsync();
+            await Transfers.RemoveSourceAsync(channel.ChatId, lifetime.Token);
+            if (music is not null) await music.CancelSourceAsync(channel);
+            foreach (var copy in await Host.OfflineCopiesAsync(channel.AccountId, lifetime.Token))
+                if (copy.Track.Origin.ChatId == channel.ChatId) await Host.RemoveOfflineAsync(copy.Track, lifetime.Token);
+            var removed = await Sync.UnindexAsync(channel, lifetime.Token);
+            await presentation.ReconcileSourceTabsAsync(channel.AccountId, await Library.SourcesAsync(channel.AccountId, lifetime.Token));
+            if (music is not null) await music.RemoveTracksAsync(removed); else await Playback.RemoveTracksAsync(removed);
+            HomeState.Invalidate(); await Refresh(); unindexMessage = $"Unindexed {channel.Name}. You can index it again whenever you like.";
+        }
+        catch (Exception e) { unindexError = Td.SafeError(e); unindexMessage = null; try { await Refresh(); } catch (Exception refreshError) { error = Td.SafeError(refreshError); } }
+        finally { busy = false; unindexingChat = null; if (!disposed && !lifetime.IsCancellationRequested) await MetadataScanner.RestoreAsync(lifetime.Token); }
+    }
+    private void CancelIndex() => indexCancellation?.Cancel();
+    private Task SearchMusic(LibrarySearchCriteria value)
+    {
+        var changed = value != searchCriteria;
+        searchCriteria = value; loadedLimit = 100;
+        return LoadLibraryAsync(searchOnly: changed);
+    }
+    private Task ClearSearchFilters(LibrarySearchCriteria value) { selectedChannel = null; return SearchMusic(value); }
+    private Task LoadMoreMusic() { if (disposed || busy || libraryLoadState != LibraryLoadState.Idle || !HasCurrentResults || !canLoadMore) return Task.CompletedTask; return LoadLibraryAsync(more: true); }
+    private Task Favorite(Track track) => Run(async () =>
+    {
+        await Library.SetFavoriteAsync(track.Origin.AccountId, track.Id, !track.Favorite, lifetime.Token);
+        var updated = track with { Favorite = !track.Favorite };
+        await Playback.UpdateTrackMetadataAsync(updated, lifetime.Token);
+        music?.UpdatePresentedTrack(updated);
+        HomeState.Invalidate(); await Refresh();
+    });
+    private async Task TogglePlaylist(Track track)
+    {
+        var target = libraryView == "playlist" ? ActivePlaylist : playlist;
+        await EditPlaylist(new(target.Tracks.Contains(track.Id) ? PlaylistAction.Remove : PlaylistAction.Add, target.Id, Tracks: [track.Id]));
+    }
+    private Task LogOut() => Run(async () =>
+    {
+        if (!cleanupPending)
+        {
+            cleanupAccount = Session.AccountId; cleanupPending = true; HomeState.Bind(null); InvalidateLibraryLoad();
+            logoutPrepared = logoutClosed = libraryCleared = sessionCleared = cleanupCheckpointSaved = remoteLogout = false;
+            cleanupCheckpointPhase = null; cleanupRecovery = false;
+        }
+        status = null;
+        string? checkpointError = null;
+        async Task SaveCheckpointAsync(string phase)
+        {
+            if (cleanupAccount is not { } account) return;
+            try
+            {
+                await Library.SaveStateAsync(0, CleanupKey, JsonSerializer.Serialize(new CleanupCheckpoint(account, remoteLogout, phase)));
+                cleanupCheckpointSaved = true; cleanupCheckpointPhase = phase;
+                checkpointError = null;
+            }
+            // A full or failing store must not prevent attempted sign-out and erasure.
+            catch (Exception e) { checkpointError = Td.SafeError(e); }
+        }
+        // Record intent before preparation can pause, fail, or be interrupted by closing the app.
+        if (!cleanupCheckpointSaved) await SaveCheckpointAsync(logoutClosed ? "closed" : "requested");
+        if (!logoutPrepared)
+        {
+            await presentation.BindAsync(null); overview = null; profile = null;
+            await Transfers.BindAsync(null);
+            await transferRefresh;
+            await MetadataScanner.SuspendAsync();
+            if (music is not null) await music.CancelWorkAsync();
+            // Signing out erases these checkpoints; storage exhaustion must not stop logout.
+            await Sync.PauseAsync(preserveResume: true);
+            await Catalog.PauseAsync(preserveResume: true);
+            lifetime.Cancel(); await syncRefresh; await Playback.StopAsync(); await Playback.BindListeningAsync(null);
+            logoutPrepared = true;
+            tracks = []; offlineTracks = []; sources = []; input = ""; searchCriteria = new(); homeHasMusic = false; HomeState.Bind(null); browseAccount = null; browseGroups = []; groupCovers = []; browseMode = "tracks"; browseGroup = browseLabel = null;
+            channelMessage = channelError = indexError = null; ResetPlaylists();
+        }
+        if (!logoutClosed)
+        {
+            if (Session.Authorization.State == "closed") logoutClosed = true;
+            else if (cleanupRecovery)
+            {
+                // A prior cleanup may already have erased the session after its final marker write failed.
+                if (Session.Authorization.State != "idle" || await Host.HasSavedSessionAsync()) remoteLogout = await Session.RecoverLogOutAsync(await Host.ConfigurationAsync());
+                else remoteLogout = false;
+                logoutClosed = true;
+            }
+            else { remoteLogout = await Session.LogOutAsync(); logoutClosed = true; }
+        }
+        // Independent cleanup stages can fail separately. Preserve the account and completed
+        // stages so retry never depends on a live session or the canceled component token.
+        var failures = new List<string>();
+        if (cleanupCheckpointPhase != "closed") await SaveCheckpointAsync("closed");
+        if (!libraryCleared)
+        {
+            try { if (cleanupAccount is { } id) { await Host.ClearOfflineAccountAsync(id, CancellationToken.None); await Library.ClearAccountAsync(id); } libraryCleared = true; }
+            catch (Exception e) { failures.Add("Library cleanup: " + Td.SafeError(e)); }
+        }
+        if (!sessionCleared)
+        {
+            try { await Host.ClearSessionAsync(); sessionCleared = true; }
+            catch (Exception e) { failures.Add("Session cleanup: " + Td.SafeError(e)); }
+        }
+        if (failures.Count > 0)
+        {
+            if (checkpointError is not null) failures.Add("Cleanup recovery could not be saved. Keep this app open until cleanup succeeds. " + checkpointError);
+            throw new InvalidOperationException(string.Join(" ", failures));
+        }
+        if (cleanupCheckpointSaved) await Library.SaveStateAsync(0, CleanupKey, "null");
+        cleanupPending = false; cleanupAccount = null;
+        status = remoteLogout ? "Signed out remotely and erased local account data. Reopen ChannelWave to connect." : "Local account data erased. Remote logout was not confirmed. Revoke this session from Telegram Settings → Devices. Reopen ChannelWave to connect.";
+    }, "Signing out and erasing local data…");
+    public async ValueTask DisposeAsync() { disposed = true; presentation.Changed -= PresentationChanged; await presentation.BindAsync(null); Transfers.Changed -= TransfersChanged; lifetime.Cancel(); MetadataScanner.TrackChanged -= BackgroundMetadataChanged; MetadataScanner.Changed -= BackgroundProgressChanged; await MetadataScanner.SuspendAsync(); InvalidateLibraryLoad(); Playback.Changed -= PlaybackChanged; Playback.PersistenceChanged -= ListeningChanged; Session.Changed -= Changed; Sync.SourceReconciled -= SourceReconciled; Sync.Changed -= SyncChanged; Catalog.Changed -= BackgroundProgressChanged; await Catalog.PauseAsync(preserveResume: true); await Sync.PauseAsync(preserveResume: true); lifetime.Cancel(); await startupConnection; await workerRestore; await syncRefresh; if (navigation is not null) { await navigation.InvokeVoidAsync("stopWatchingLayout"); await navigation.InvokeVoidAsync("stopWatchingNavigation"); await navigation.InvokeVoidAsync("stopWatchingActivity"); await navigation.DisposeAsync(); } navigationReference?.Dispose(); lifetime.Dispose(); }
+}

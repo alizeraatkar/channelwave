@@ -1,0 +1,39 @@
+@using ChannelWave.Core
+@using System.Globalization
+
+<div class="music-channel-filter">
+    <label for="@buttonId">Source</label>
+    <button @ref="trigger" id="@buttonId" class="music-channel-button" aria-haspopup="dialog" aria-expanded="@open.ToString().ToLowerInvariant()" @onclick="OpenAsync">
+        <bdi dir="auto">@SelectedName</bdi><MusicIcon Name="chevron" />
+    </button>
+</div>
+<LibraryDialog Open="@(open && Enabled)" Title="Choose a source" OnClose="() => open = false">
+    <fieldset class="channel-options">
+        <legend class="music-sr-only">Source</legend>
+        <label><span>All sources</span><input type="radio" name="@buttonId" value="" checked="@(Value == "")" @onchange='() => SelectAsync("")' /></label>
+        @foreach (var source in Sources.OrderBy(x => x.Name))
+        {
+            var value = source.ChatId.ToString(CultureInfo.InvariantCulture);
+            <label @key="source.ChatId"><bdi dir="auto">@source.Name</bdi><input type="radio" name="@buttonId" value="@value" checked="@(Value == value)" @onchange="() => SelectAsync(value)" /></label>
+        }
+    </fieldset>
+</LibraryDialog>
+
+@code {
+    [Parameter] public IReadOnlyList<Source> Sources { get; set; } = [];
+    [Parameter] public string Value { get; set; } = "";
+    [Parameter] public EventCallback<string> ValueChanged { get; set; }
+    [Parameter] public string Context { get; set; } = "";
+    [Parameter] public bool Enabled { get; set; } = true;
+    private readonly string buttonId = $"music-channel-{Guid.NewGuid():N}";
+    private bool open;
+    private ElementReference trigger;
+    private string? previousContext;
+    private string SelectedName => Value.Length == 0 ? "All sources"
+        : Sources.FirstOrDefault(x => x.ChatId.ToString(CultureInfo.InvariantCulture) == Value)?.Name ?? "Unavailable source";
+    protected override void OnParametersSet() { if (!Enabled || previousContext != Context) open = false; previousContext = Context; }
+    // Safari does not focus buttons on pointer activation. Establish the opener
+    // explicitly so all modal dismissal paths can restore keyboard focus.
+    private async Task OpenAsync() { await trigger.FocusAsync(preventScroll: true); open = true; }
+    private async Task SelectAsync(string value) { open = false; await ValueChanged.InvokeAsync(value); }
+}

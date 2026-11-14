@@ -1,0 +1,244 @@
+@using ChannelWave.Core
+@using System.Globalization
+@implements IDisposable
+
+<div class="library-search-controls" @oncompositionstart="BeginComposition" @oncompositionend="EndComposition">
+    <form class="music-search" @onsubmit="SubmitAsync" @onsubmit:preventDefault>
+        <label for="music-search">@Label</label>
+        <div><MusicIcon Name="search" /><input id="music-search" type="search" placeholder="Song, artist, album or source" value="@text" @oninput='e => Input("text", e)' aria-describedby="search-help" />
+            @if (text.Length > 0) { <button class="search-clear" type="button" aria-label="Clear search" @onclick="ClearTextAsync"><MusicIcon Name="close" /></button> }
+            <button type="submit">Search</button>
+        </div>
+        <p id="search-help" class="search-help">Results update as you type. Use quotes for an exact phrase.</p>
+    </form>
+    <div class="music-tools">
+        @CollectionTabs
+        <div class="library-filter-actions">
+            <ChannelFilter Sources="Sources" Value="@Source" ValueChanged="SourceChanged" Enabled="Enabled" Context="@Context" />
+            <button @ref="filterTrigger" class="search-filter-toggle" type="button" aria-haspopup="dialog" aria-expanded="@expanded.ToString().ToLowerInvariant()" @onclick="OpenFiltersAsync"><MusicIcon Name="filters" />Filters (@FilterCount)<MusicIcon Name="chevron" /></button>
+            @ExtraActions
+        </div>
+    </div>
+    @if (Value.HasFilters || Source.Length > 0)
+    {
+        <div class="active-search-filters" aria-label="Active search filters">
+            @if (Source.Length > 0) { <button type="button" aria-label="Remove source filter" @onclick='() => SourceChanged.InvokeAsync("")'>Source: <bdi dir="auto">@SourceName</bdi><MusicIcon Name="close" /></button> }
+            @if (Value.LikedOnly) { <button type="button" aria-label="Remove liked filter" @onclick='() => RemoveAsync("liked")'>Liked only<MusicIcon Name="close" /></button> }
+            @if (Value.SavedOnly) { <button type="button" aria-label="Remove saved filter" @onclick='() => RemoveAsync("saved")'>Saved offline<MusicIcon Name="close" /></button> }
+            @if (Value.Title.Length > 0) { <button type="button" aria-label="Remove title filter" @onclick='() => RemoveAsync("title")'>Title: <bdi dir="auto">@Value.Title</bdi><MusicIcon Name="close" /></button> }
+            @if (Value.Artist.Length > 0) { <button type="button" aria-label="Remove artist filter" @onclick='() => RemoveAsync("artist")'>Artist: <bdi dir="auto">@Value.Artist</bdi><MusicIcon Name="close" /></button> }
+            @if (Value.MinDuration is not null || Value.MaxDuration is not null) { <button type="button" aria-label="Remove duration filter" @onclick='() => RemoveAsync("duration")'>Duration: @(Value.MinDuration is { } min ? Duration(min) : "0:00")–@(Value.MaxDuration is { } max ? Duration(max) : "any")<MusicIcon Name="close" /></button> }
+            @if (Value.PublishedFrom is not null || Value.PublishedBefore is not null) { <button type="button" aria-label="Remove publication date filter" @onclick='() => RemoveAsync("date")'>Published: @DateLabel(Value.PublishedFrom)–@DateLabel(Value.PublishedBefore?.ToLocalTime().AddDays(-1))<MusicIcon Name="close" /></button> }
+            <button type="button" class="clear-search-filters" @onclick="ClearFiltersAsync">Clear filters</button>
+        </div>
+    }
+    <LibraryDialog @ref="filterDialog" Open="@(expanded && Enabled)" Title="Filters" Class="search-filter-sheet" DragHandle="true" OnClose="CloseFiltersAsync">
+        <ChildContent>
+            <form id="library-filter-form" class="filter-sheet-form" @onsubmit="ApplyFiltersAsync" @onsubmit:preventDefault>
+                <fieldset class="discovery-filter-checks"><legend>Collection</legend><label><input type="checkbox" @bind="likedOnly" />Liked only</label><label><input type="checkbox" @bind="savedOnly" />Saved offline</label></fieldset>
+                <p class="filter-sheet-summary" role="status" aria-live="polite">@(DraftCount == 0 ? "No filters selected" : $"{DraftCount} {(DraftCount == 1 ? "filter" : "filters")} selected")<span>Choose Show results to apply your changes.</span></p>
+                <fieldset class="filter-range">
+                    <legend>Published date</legend>
+                    <div class="filter-range-fields filter-date-fields">
+                        <div class="search-field"><label for="search-from">Published from</label><input id="search-from" type="date" value="@fromDate" @onchange='e => Input("from", e)' aria-invalid="@(dateError is not null ? "true" : null)" aria-describedby="@(dateError is not null ? "search-date-error" : null)" /></div>
+                        <div class="search-field"><label for="search-to">Published to</label><input id="search-to" type="date" value="@toDate" @onchange='e => Input("to", e)' aria-invalid="@(dateError is not null ? "true" : null)" aria-describedby="@(dateError is not null ? "search-date-error" : null)" /></div>
+                    </div>
+                    @if (dateError is not null) { <p id="search-date-error" class="search-validation" role="alert">@dateError</p> }
+                </fieldset>
+                <fieldset class="filter-range">
+                    <legend>Duration <span>(min : sec)</span></legend>
+                    <div class="filter-range-fields">
+                        <div class="search-field"><label for="search-min-duration">Min duration</label><input id="search-min-duration" type="text" placeholder="e.g. 2:00" value="@minDuration" @oninput='e => Input("min", e)' aria-invalid="@(durationError is not null ? "true" : null)" aria-describedby="@(durationError is not null ? "search-duration-error" : null)" /></div>
+                        <div class="search-field"><label for="search-max-duration">Max duration</label><input id="search-max-duration" type="text" placeholder="e.g. 5:00" value="@maxDuration" @oninput='e => Input("max", e)' aria-invalid="@(durationError is not null ? "true" : null)" aria-describedby="@(durationError is not null ? "search-duration-error" : null)" /></div>
+                    </div>
+                    @if (durationError is not null) { <p id="search-duration-error" class="search-validation" role="alert">@durationError</p> }
+                </fieldset>
+                <div class="search-field filter-text-field"><label for="search-artist">Artist</label><input id="search-artist" type="text" placeholder="Search artists..." value="@artist" @oninput='e => Input("artist", e)' dir="auto" /></div>
+                <div class="search-field filter-text-field"><label for="search-title">Title</label><input id="search-title" type="text" placeholder="Search song titles..." value="@title" @oninput='e => Input("title", e)' dir="auto" /></div>
+                <fieldset class="filter-range">
+                    <legend>Quick add filter</legend>
+                    <div class="filter-presets">
+                        <button type="button" aria-pressed='@((minDuration.Length == 0 && maxDuration == "3:00").ToString().ToLowerInvariant())' @onclick='() => SetDurationPreset("", "3:00")'><MusicIcon Name="plus" />Up to 3:00</button>
+                        <button type="button" aria-pressed='@((minDuration == "3:00" && maxDuration == "5:00").ToString().ToLowerInvariant())' @onclick='() => SetDurationPreset("3:00", "5:00")'><MusicIcon Name="plus" />3:00 to 5:00</button>
+                    </div>
+                </fieldset>
+            </form>
+        </ChildContent>
+        <FooterContent>
+            <button type="button" class="filter-reset" @onclick="ResetSheet">Reset</button>
+            <button type="submit" form="library-filter-form" class="filter-apply" disabled="@(composing || durationError is not null || dateError is not null)" >Show results</button>
+        </FooterContent>
+    </LibraryDialog>
+</div>
+
+@code {
+    [Parameter] public LibrarySearchCriteria Value { get; set; } = new();
+    [Parameter] public EventCallback<LibrarySearchCriteria> ValueChanged { get; set; }
+    [Parameter] public string Label { get; set; } = "Search your indexed library";
+    [Parameter] public IReadOnlyList<Source> Sources { get; set; } = [];
+    [Parameter] public string Source { get; set; } = "";
+    [Parameter] public EventCallback<string> SourceChanged { get; set; }
+    [Parameter] public string Context { get; set; } = "";
+    [Parameter] public bool Enabled { get; set; }
+    [Parameter] public bool Searching { get; set; }
+    [Parameter] public RenderFragment? CollectionTabs { get; set; }
+    [Parameter] public RenderFragment? ExtraActions { get; set; }
+    [Parameter] public EventCallback<LibrarySearchCriteria> ClearAllFilters { get; set; }
+    private string text = "", title = "", artist = "", minDuration = "", maxDuration = "", fromDate = "", toDate = "";
+    private string? durationError, dateError, previousContext;
+    private LibrarySearchCriteria? observed, sent;
+    private CancellationTokenSource? delay;
+    private bool expanded, composing, disposed, applying, likedOnly, savedOnly;
+    private LibraryDialog? filterDialog;
+    private ElementReference filterTrigger;
+    private string SourceName => Sources.FirstOrDefault(x => x.ChatId.ToString(CultureInfo.InvariantCulture) == Source)?.Name ?? "Selected source";
+    private int FilterCount => (string.IsNullOrWhiteSpace(Value.Title) ? 0 : 1) + (string.IsNullOrWhiteSpace(Value.Artist) ? 0 : 1)
+        + (Value.MinDuration is null && Value.MaxDuration is null ? 0 : 1) + (Value.PublishedFrom is null && Value.PublishedBefore is null ? 0 : 1) + (Value.LikedOnly ? 1 : 0) + (Value.SavedOnly ? 1 : 0);
+    private int DraftCount => (string.IsNullOrWhiteSpace(title) ? 0 : 1) + (string.IsNullOrWhiteSpace(artist) ? 0 : 1)
+        + (minDuration.Length == 0 && maxDuration.Length == 0 ? 0 : 1) + (fromDate.Length == 0 && toDate.Length == 0 ? 0 : 1) + (likedOnly ? 1 : 0) + (savedOnly ? 1 : 0);
+
+    protected override void OnParametersSet()
+    {
+        if (previousContext != Context) { CancelDelay(); composing = expanded = false; SetDrafts(Value); }
+        else if (observed != Value && sent != Value)
+        {
+            if (expanded) text = Value.Text;
+            else SetDrafts(Value);
+        }
+        previousContext = Context; observed = Value;
+    }
+    public void ResetDrafts(LibrarySearchCriteria value) { CancelDelay(); composing = expanded = false; SetDrafts(value); }
+    private void SetDrafts(LibrarySearchCriteria value) { text = value.Text; SetFilterDrafts(value); }
+    private void SetFilterDrafts(LibrarySearchCriteria value)
+    {
+        likedOnly = value.LikedOnly; savedOnly = value.SavedOnly;
+        title = value.Title; artist = value.Artist;
+        minDuration = value.MinDuration is { } min ? Duration(min) : "";
+        maxDuration = value.MaxDuration is { } max ? Duration(max) : "";
+        fromDate = value.PublishedFrom?.ToLocalTime().ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "";
+        toDate = value.PublishedBefore?.ToLocalTime().AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? "";
+        durationError = dateError = null;
+    }
+    private async Task OpenFiltersAsync()
+    {
+        await filterTrigger.FocusAsync(preventScroll: true);
+        SetFilterDrafts(Value); expanded = true;
+    }
+    private Task CloseFiltersAsync()
+    {
+        expanded = composing = false; SetFilterDrafts(Value);
+        return !applying && text != Value.Text ? QueueQueryAsync() : Task.CompletedTask;
+    }
+    private Task Input(string field, ChangeEventArgs args)
+    {
+        var value = args.Value?.ToString() ?? "";
+        switch (field)
+        {
+            case "text": text = value; return QueueQueryAsync();
+            case "title": title = value; break;
+            case "artist": artist = value; break;
+            case "min": minDuration = value; break;
+            case "max": maxDuration = value; break;
+            case "from": fromDate = value; break;
+            case "to": toDate = value; break;
+        }
+        TryCriteria(); return Task.CompletedTask;
+    }
+    private Task QueueQueryAsync()
+    {
+        CancelDelay();
+        if (composing) return Task.CompletedTask;
+        var candidate = Value with { Text = text };
+        if (text.Length == 0) return CommitAsync(candidate);
+        var pending = new CancellationTokenSource(); delay = pending;
+        _ = DebounceAsync(candidate, pending.Token);
+        return Task.CompletedTask;
+    }
+    private async Task DebounceAsync(LibrarySearchCriteria candidate, CancellationToken ct)
+    {
+        try { await Task.Delay(250, ct); if (!ct.IsCancellationRequested && !disposed) await InvokeAsync(() => CommitAsync(candidate)); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+    }
+    private Task CommitAsync(LibrarySearchCriteria candidate, bool force = false)
+    {
+        sent = candidate;
+        return !force && candidate == Value ? Task.CompletedTask : ValueChanged.InvokeAsync(candidate);
+    }
+    private Task SubmitAsync()
+    {
+        CancelDelay();
+        return composing ? Task.CompletedTask : CommitAsync(Value with { Text = text }, force: !Searching);
+    }
+    private Task ClearTextAsync() { text = ""; return SubmitAsync(); }
+    private async Task ApplyFiltersAsync()
+    {
+        if (composing || TryCriteria() is not { } candidate) return;
+        CancelDelay(); applying = true;
+        try
+        {
+            if (filterDialog is not null) await filterDialog.CloseAsync();
+            else expanded = false;
+            await CommitAsync(candidate, force: !Searching);
+        }
+        finally { applying = false; }
+    }
+    private void ResetSheet() { composing = false; SetFilterDrafts(new(text)); }
+    private void SetDurationPreset(string min, string max) { minDuration = min; maxDuration = max; TryCriteria(); }
+    private async Task ClearFiltersAsync()
+    {
+        CancelDelay(); var candidate = new LibrarySearchCriteria(text); SetDrafts(candidate);
+        await ClearAllFilters.InvokeAsync(candidate);
+    }
+    private Task RemoveAsync(string field)
+    {
+        var candidate = field switch
+        {
+            "liked" => Value with { LikedOnly = false },
+            "saved" => Value with { SavedOnly = false },
+            "title" => Value with { Title = "" },
+            "artist" => Value with { Artist = "" },
+            "duration" => Value with { MinDuration = null, MaxDuration = null },
+            _ => Value with { PublishedFrom = null, PublishedBefore = null }
+        };
+        candidate = candidate with { Text = text };
+        CancelDelay(); SetDrafts(candidate); return CommitAsync(candidate);
+    }
+    private LibrarySearchCriteria? TryCriteria()
+    {
+        durationError = dateError = null;
+        var validMin = TryDuration(minDuration, out var min); var validMax = TryDuration(maxDuration, out var max);
+        if (!validMin || !validMax) durationError = "Enter durations as nonnegative seconds or mm:ss (for example, 3:30).";
+        else if (min > max) durationError = "Minimum duration must not exceed maximum duration.";
+        var validFrom = TryDate(fromDate, out var from); var validTo = TryDate(toDate, out var to);
+        if (!validFrom || !validTo) dateError = "Enter a valid publication date.";
+        else if (from > to) dateError = "Published from must not follow Published to.";
+        if (durationError is not null || dateError is not null) return null;
+        return new(text, title.Trim(), artist.Trim(), min, max, from is { } start ? LocalMidnight(start) : null,
+            to is { } end ? LocalMidnight(end.AddDays(1)) : null, likedOnly, savedOnly);
+    }
+    private static DateTimeOffset LocalMidnight(DateOnly day) => new(day.ToDateTime(TimeOnly.MinValue, DateTimeKind.Local));
+    private static bool TryDate(string value, out DateOnly? date)
+    {
+        date = null;
+        if (value.Length == 0) return true;
+        if (!DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed) || parsed == DateOnly.MinValue || parsed == DateOnly.MaxValue) return false;
+        date = parsed; return true;
+    }
+    private static bool TryDuration(string value, out int? seconds)
+    {
+        seconds = null; value = value.Trim();
+        if (value.Length == 0) return true;
+        var parts = value.Split(':');
+        if (parts.Length > 2 || parts.Any(part => part.Length == 0 || part.Any(c => c is < '0' or > '9'))
+            || !int.TryParse(parts[0], CultureInfo.InvariantCulture, out var first)) return false;
+        if (parts.Length == 1) { seconds = first; return true; }
+        if (parts[1].Length != 2 || !int.TryParse(parts[1], out var last) || last >= 60 || first > (int.MaxValue - last) / 60) return false;
+        seconds = first * 60 + last; return true;
+    }
+    private static string Duration(int seconds) => $"{seconds / 60}:{seconds % 60:00}";
+    private static string DateLabel(DateTimeOffset? date) => date?.ToLocalTime().ToString("MMM d, yyyy", CultureInfo.CurrentCulture) ?? "any";
+    private void BeginComposition() { composing = true; CancelDelay(); }
+    private Task EndComposition() { composing = false; if (expanded) { TryCriteria(); return Task.CompletedTask; } return QueueQueryAsync(); }
+    private void CancelDelay() { delay?.Cancel(); delay?.Dispose(); delay = null; }
+    public void Dispose() { disposed = true; CancelDelay(); }
+}

@@ -1,0 +1,46 @@
+@using ChannelWave.Core
+
+<div class="discovery-toolbar">
+    @if (ShowModes)
+    {
+        <div class="discovery-tabs" role="group" aria-label="Browse your library">
+            @foreach (var item in new[] { "tracks", "artists", "albums" })
+            {
+                <button aria-pressed="@((Mode == item).ToString().ToLowerInvariant())" @onclick="() => OnMode.InvokeAsync(item)">@Labels[item]</button>
+            }
+        </div>
+    }
+    @if (Group is not null)
+    {
+        <button class="subtle-button discovery-back" @onclick="() => OnMode.InvokeAsync(Mode)"><MusicIcon Name="previous" />All @Mode</button>
+        <div class="discovery-play"><button class="primary-button" disabled="@Disabled" @onclick="() => OnPlay.InvokeAsync(false)"><MusicIcon Name="play" />Play</button><button class="outline-button" disabled="@Disabled" @onclick="() => OnPlay.InvokeAsync(true)">Shuffle</button></div>
+    }
+    @if (Mode == "tracks" || Group is not null || !ShowModes)
+    {
+        <label class="discovery-sort">Sort by<select aria-label="Sort tracks" value="@((int)Order)" @onchange="Sort">
+            @foreach (var option in Options) { <option value="@((int)option.Key)">@option.Value</option> }
+        </select></label>
+    }
+</div>
+@code {
+    [Parameter] public string Mode { get; set; } = "tracks";
+    [Parameter] public string? Group { get; set; }
+    [Parameter] public bool ShowModes { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public LibraryOrder Order { get; set; }
+    [Parameter] public EventCallback<string> OnMode { get; set; }
+    [Parameter] public EventCallback<LibraryOrder> OnSort { get; set; }
+    [Parameter] public EventCallback<bool> OnPlay { get; set; }
+    private static readonly Dictionary<string, string> Labels = new() { ["tracks"] = "Tracks", ["artists"] = "Artists", ["albums"] = "Albums" };
+    private IEnumerable<KeyValuePair<LibraryOrder, string>> Options => AllOptions.Where(x => x.Key != LibraryOrder.Album || Mode == "albums" && Group is not null);
+    private static readonly Dictionary<LibraryOrder, string> AllOptions = new()
+    {
+        [LibraryOrder.AddedNewest] = "Newest added", [LibraryOrder.AddedOldest] = "Oldest added",
+        [LibraryOrder.Title] = "Title A–Z", [LibraryOrder.TitleDescending] = "Title Z–A",
+        [LibraryOrder.Artist] = "Artist A–Z", [LibraryOrder.ArtistDescending] = "Artist Z–A",
+        [LibraryOrder.PublishedNewest] = "Newest published", [LibraryOrder.PublishedOldest] = "Oldest published",
+        [LibraryOrder.Shortest] = "Shortest first", [LibraryOrder.Longest] = "Longest first", [LibraryOrder.Album] = "Album order"
+    };
+    private Task Sort(ChangeEventArgs e) => int.TryParse(e.Value?.ToString(), out var value) && Enum.IsDefined((LibraryOrder)value)
+        ? OnSort.InvokeAsync((LibraryOrder)value) : Task.CompletedTask;
+}

@@ -1,0 +1,94 @@
+@using ChannelWave.Core
+@using ChannelWave.Telegram
+@implements IDisposable
+@inject TelegramSession Session
+@inject ILibraryRepository Library
+@inject IRuntimeHost Host
+
+<section class="telegram-track-details" aria-labelledby="telegram-message-heading" aria-busy="@loading.ToString().ToLowerInvariant()">
+    <h3 id="telegram-message-heading">Telegram message</h3>
+    <dl>
+        <dt>Source</dt><dd><bdi>@(string.IsNullOrWhiteSpace(Track.Origin.SourceName) ? "Unknown source" : Track.Origin.SourceName)</bdi></dd>
+        <dt>@(Track.Origin.Message?.IsChannelPost == true ? "Author" : "Sender")</dt><dd><bdi>@(Track.Origin.Message?.Attribution ?? "Unknown sender")</bdi></dd>
+        <dt>Posted</dt><dd>
+            @if (Track.PublishedAt > DateTimeOffset.UnixEpoch)
+            {
+                <time datetime="@Track.PublishedAt.ToString("O")">@Track.PublishedAt.ToLocalTime().ToString("g")</time>
+            }
+            else { <span>Unknown posting date</span> }
+        </dd>
+    </dl>
+    @if (UsableLink is { } link)
+    {
+        @if (Host.UsesBrowserLinks)
+        {
+            <a class="telegram-message-link" href="@link.Url" target="_blank" rel="noopener noreferrer">Open in Telegram <span aria-hidden="true">↗</span></a>
+        }
+        else
+        {
+            <button type="button" class="telegram-message-link" disabled="@opening" @onclick="OpenAsync">Open in Telegram <span aria-hidden="true">↗</span></button>
+        }
+        @if (!link.IsPublic) { <p class="telegram-message-note">Requires access to this Telegram chat.</p> }
+    }
+    else
+    {
+        <button type="button" class="telegram-message-link" disabled>Open in Telegram <span aria-hidden="true">↗</span></button>
+        <p class="telegram-message-note">@(loading ? "Loading message details…" : Session.AccountId is null && Track.Origin.Message?.LinkResolved != true ? "Connect Telegram to load the message link." : "Message link unavailable.")</p>
+    }
+    @if (notice is not null) { <p class="telegram-message-note" role="status">@notice</p> }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public Track Track { get; set; } = null!;
+    [Parameter] public EventCallback<Track> OnMetadataSaved { get; set; }
+    private readonly CancellationTokenSource lifetime = new();
+    private long? initialAccount;
+    private bool loading, opening, linkBlocked, disposed;
+    private string? notice;
+    private TelegramMessageLink? UsableLink => !linkBlocked && (Session.AccountId is null || Session.AccountId == Track.Origin.AccountId)
+        && Track.Origin.Message?.Link is { IsValid: true } link ? link : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        initialAccount = Session.AccountId;
+        Session.Changed += SessionChanged;
+        if (initialAccount != Track.Origin.AccountId) return;
+        loading = true;
+        try
+        {
+            var result = await new TelegramMessageDetails(Session, Library).RefreshAsync(Track, lifetime.Token);
+            if (disposed || lifetime.IsCancellationRequested || Session.AccountId != initialAccount) return;
+            linkBlocked = result.LinkDenied; notice = result.Notice;
+            if (result.Track is { } updated) { Track = updated; await OnMetadataSaved.InvokeAsync(updated); }
+            else { linkBlocked = true; notice = "This track is no longer in the library."; }
+        }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested || Session.AccountId != initialAccount) { }
+        catch (Exception e)
+        {
+            linkBlocked = e is TelegramException { Code: 400 or 403 or 404 };
+            TelegramMessageReader.DeferRateLimit(Session, e);
+            notice = linkBlocked ? "The message is unavailable or this account no longer has access."
+                : "Could not load Telegram details. Cached details are shown; reopen details to retry.";
+        }
+        finally { loading = false; }
+    }
+
+    private void SessionChanged()
+    {
+        if (Session.AccountId != initialAccount) { lifetime.Cancel(); linkBlocked = true; }
+    }
+    private async Task OpenAsync()
+    {
+        if (UsableLink is not { } link || opening) return;
+        opening = true;
+        try { await Host.OpenTelegramLinkAsync(link, lifetime.Token); }
+        catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { }
+        catch (Exception) { notice = "Could not open Telegram. Please try again."; }
+        finally { opening = false; }
+    }
+    public void Dispose()
+    {
+        disposed = true; Session.Changed -= SessionChanged; lifetime.Cancel();
+        lifetime.Dispose();
+    }
+}

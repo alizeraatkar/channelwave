@@ -1,0 +1,137 @@
+name: ChannelWave checks
+on:
+  workflow_call:
+    inputs:
+      sha: { type: string, required: true }
+permissions:
+  contents: read
+env:
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+jobs:
+  security:
+    uses: ./.github/workflows/security.yml
+    with: { sha: '${{ inputs.sha }}' }
+  apple:
+    uses: ./.github/workflows/apple-compile.yml
+    with: { sha: '${{ inputs.sha }}' }
+  shared:
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2025, macos-26]
+    runs-on: ${{ matrix.os }}
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.tools/nuget-application
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ inputs.sha }}', persist-credentials: false }
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with: { global-json-file: global.json }
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with: { node-version: '24.15.0' }
+      - run: node scripts/verify-td-schema.mjs
+      - run: python scripts/verify-toolchain.py --node
+      - run: python -m unittest discover -s tests/ci -v
+      - run: dotnet restore ChannelWave.slnx --locked-mode
+      - run: dotnet build ChannelWave.slnx -c Release --no-restore
+      - run: dotnet run --project tests/ChannelWave.Core.Tests -c Release --no-build
+      - run: git diff --exit-code
+  browser:
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-24.04, browser: chromium }
+          - { os: windows-2025, browser: msedge }
+          - { os: macos-26, browser: webkit }
+    runs-on: ${{ matrix.os }}
+    env:
+      CHANNELWAVE_BROWSER: ${{ matrix.browser }}
+      CHANNELWAVE_CONFIGURATION: Release
+      NUGET_PACKAGES: ${{ github.workspace }}/.tools/nuget-application
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ inputs.sha }}', persist-credentials: false }
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with: { global-json-file: global.json }
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with: { node-version: '24.15.0', cache: npm }
+      - run: dotnet restore ChannelWave.slnx --locked-mode
+      - run: dotnet build ChannelWave.slnx -c Release --no-restore
+      - run: npm ci --ignore-scripts
+      - run: python scripts/verify-toolchain.py --node
+      - if: matrix.browser != 'msedge'
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+      - if: matrix.browser == 'msedge'
+        run: npx playwright install ffmpeg
+      - if: matrix.browser != 'webkit'
+        name: Full browser and adapter suite
+        run: npm run test:browser
+      - if: matrix.browser == 'webkit'
+        name: Shared Apple UI (native storage/audio are validated separately)
+        run: npm run test:browser -- apple-ui.spec.mjs
+      - name: Browser evidence (synthetic fixtures only)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-${{ matrix.browser }}-${{ github.run_attempt }}
+          path: |
+            test-results/
+            playwright-report/
+            artifacts/browser-review/*.png
+          include-hidden-files: true
+          retention-days: 14
+          if-no-files-found: warn
+  maui:
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, workload: maui-windows, tfm: net10.0-windows10.0.19041.0 }
+          - { os: ubuntu-24.04, workload: maui-android, tfm: net10.0-android }
+    runs-on: ${{ matrix.os }}
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.tools/nuget-application
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ inputs.sha }}', persist-credentials: false }
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with: { global-json-file: global.json }
+      - if: matrix.workload == 'maui-android'
+        uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with: { distribution: microsoft, java-version: '21' }
+      - shell: pwsh
+        run: ./scripts/install-workloads.ps1 -Workloads '${{ matrix.workload }}'
+      - if: matrix.workload == 'maui-android'
+        run: >-
+          dotnet build src/ChannelWave.Host.Maui -t:InstallAndroidDependencies
+          -f net10.0-android -p:ChannelWaveTarget=net10.0-android -p:ChannelWaveAndroidRelease=true
+          -p:RestoreLockedMode=true -p:AcceptAndroidSdkLicenses=true
+      - shell: pwsh
+        run: |
+          $extra = @()
+          if ('${{ matrix.workload }}' -eq 'maui-android') { $extra += '-p:ChannelWaveAndroidRelease=true' }
+          else { $extra += @('-p:ChannelWaveRelease=true', '-p:ChannelWaveReleaseRid=win-x64', '-p:SelfContained=true', '-p:WindowsAppSDKSelfContained=true') }
+          dotnet restore src/ChannelWave.Host.Maui --locked-mode '-p:ChannelWaveTarget=${{ matrix.tfm }}' @extra
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet build src/ChannelWave.Host.Maui -c Release --no-restore '-p:ChannelWaveTarget=${{ matrix.tfm }}' @extra
+  gate:
+    name: Required checks
+    if: always()
+    needs: [shared, browser, maui, apple, security]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Reject failure, cancellation and unexpected skips
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          assert all(job['result'] == 'success' for job in results.values()), results
+          PY

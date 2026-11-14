@@ -1,0 +1,56 @@
+@using ChannelWave.Core
+@implements IDisposable
+@inject MediaStorageService Storage
+@inject IRuntimeHost Host
+
+<section class="storage-page media-page" aria-label="Storage" aria-busy="@busy.ToString().ToLowerInvariant()">
+    <button class="subtle-button" @onclick="OnBack">← Your account</button>
+    <header class="media-page-heading"><h1>Storage</h1><p>On this device · Current account</p></header>
+    @if (busy && usage is null) { <LoadingIndicator Label="Measuring storage…" /> }
+    @if (busy && usage is not null) { <LoadingIndicator Label="Updating storage…" /> }
+    @if (error is not null) { <p class="music-error" role="alert">@error</p><button class="outline-button" @onclick="Refresh">Retry measuring storage</button> }
+    @if (usage is { } measured)
+    {
+        <section class="storage-section" aria-labelledby="usage-title">
+            <h2 id="usage-title">@Size(measured.Total) used by ChannelWave@(measured.Estimated ? " (estimated)" : "")</h2>
+            <div class="storage-bar" aria-hidden="true"><span style="width:@Percent(measured.OfflineBytes)%"></span><span style="width:@Percent(measured.TemporaryBytes)%"></span><span style="width:@Percent(measured.OtherBytes)%"></span></div>
+            <dl class="storage-breakdown"><div><dt>Saved offline</dt><dd>@Size(measured.OfflineBytes)</dd></div><div><dt>Temporary cache</dt><dd>@Size(measured.TemporaryBytes)</dd></div><div><dt>Database, artwork &amp; staging</dt><dd>@Size(measured.OtherBytes)</dd></div></dl>
+            @if (Host.UsesBrowserLinks) { <p class="media-note">App-owned saved audio is measured. Other values are estimates; the cache limit covers tracked media. Your browser can reclaim site storage.</p> }
+            else { <p class="media-note">Includes Telegram’s temporary files and separate saved copies.</p> }
+            @if (measured.SiteUsage is { } site) { <p class="media-note">Whole site estimate: @Size(site)@(measured.SiteQuota is { } quota ? $" of {Size(quota)} allowed by your browser" : "").</p> }
+        </section>
+    }
+    <section class="storage-section" aria-labelledby="cache-title">
+        <h2 id="cache-title">Temporary cache limit</h2>
+        <div class="storage-limits" role="group" aria-label="Temporary cache limit">
+            @foreach (var limit in StorageSettings.Limits) { <button disabled="@busy" aria-pressed="@((settings?.TemporaryLimit == limit).ToString().ToLowerInvariant())" @onclick="() => SetLimit(limit)">@Size(limit)</button> }
+        </div>
+        <p>Only temporary files are removed automatically. Saved songs and playing audio are kept.</p>
+        <button class="outline-button" disabled="@(busy || usage is null)" @onclick="() => confirmClear = true">Clear temporary cache</button>
+        <p class="media-note">@if (usage is { } stats) { <span>Up to @Size(Math.Max(0, stats.TemporaryBytes - stats.ProtectedBytes)) may be reclaimed. </span> }Files in use and copies waiting to export are kept. Untracked Telegram files may remain.</p>
+        @if (feedback is not null) { <p class="music-feedback" role="status">@feedback</p> }
+    </section>
+    <section class="storage-section"><h2>Saved offline</h2><p>Songs you chose to keep for listening without a connection.</p><button class="subtle-button" @onclick="OnOffline">Manage saved songs <MusicIcon Name="arrow" /></button></section>
+    <section class="storage-section"><h2>Exported files</h2><p>Copies saved outside ChannelWave are managed in your file app and are excluded from these totals.</p></section>
+</section>
+<LibraryDialog Title="Clear temporary cache?" Open="confirmClear" OnClose="() => confirmClear = false">
+    <p>Saved offline songs and current playback are kept. You may need to download other songs again.</p>
+    <button class="outline-button" @onclick="() => confirmClear = false">Cancel</button><button class="primary-button" @onclick="Clear">Clear cache</button>
+</LibraryDialog>
+@code {
+    [Parameter] public long Account { get; set; }
+    [Parameter] public EventCallback OnBack { get; set; }
+    [Parameter] public EventCallback OnOffline { get; set; }
+    private StorageUsage? usage;
+    private StorageSettings? settings;
+    private string? error, feedback;
+    private bool busy, confirmClear;
+    private readonly CancellationTokenSource lifetime = new();
+    protected override Task OnInitializedAsync() => Refresh();
+    private string Percent(long value) => (usage?.Total > 0 ? value * 100d / usage.Total : 0).ToString("0.###", System.Globalization.CultureInfo.InvariantCulture);
+    private static string Size(long bytes) => bytes >= 1_000_000_000 ? $"{bytes / 1_000_000_000d:0.##} GB" : $"{bytes / 1_000_000d:0.##} MB";
+    private async Task Refresh() { busy = true; error = null; try { settings = await Storage.SettingsAsync(Account, lifetime.Token); usage = await Storage.UsageAsync(Account, lifetime.Token); } catch (OperationCanceledException) when (lifetime.IsCancellationRequested) { } catch (Exception e) { error = e.Message.Split('\n')[0]; } finally { busy = false; } }
+    private async Task SetLimit(long limit) { busy = true; try { await Storage.SetLimitAsync(Account, limit, lifetime.Token); feedback = "Temporary cache limit saved."; await Refresh(); } catch (Exception e) { error = e.Message.Split('\n')[0]; } finally { busy = false; } }
+    private async Task Clear() { confirmClear = false; busy = true; try { await Storage.TrimAsync(Account, true, lifetime.Token); await Refresh(); feedback = "Eligible temporary files cleared. Files in use and untracked Telegram files may remain."; } catch (Exception e) { error = e.Message.Split('\n')[0]; } finally { busy = false; } }
+    public void Dispose() { lifetime.Cancel(); lifetime.Dispose(); }
+}

@@ -1,0 +1,107 @@
+@using ChannelWave.Core
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject PlaybackCoordinator Playback
+@inject Microsoft.JSInterop.IJSRuntime JS
+
+<LibraryDialog Open="Open" Title="Up next" Class="queue-panel" OnClose="OnClose">
+    <ChildContent>
+    @if (Playback.CurrentTrack is { } current)
+    {
+        <section class="queue-current" aria-label="Current queue song"><h3>Now playing</h3><div><TrackArtwork Track="current" AllowNetwork="false" /><span><strong dir="auto">@current.Title</strong><small><MusicCreditLink Track="current" BeforeNavigate="OnClose" /></small><small class="queue-source" dir="auto">@current.Origin.SourceName</small></span><button class="music-icon-button" aria-label="@(Playback.IsPlaying ? "Pause current song" : "Resume current song")" disabled="@(!Playback.CanResume || Playback.IsPreparing)" @onclick="ToggleCurrent"><MusicIcon Name="@(Playback.IsPlaying ? "pause" : "play")" /></button></div></section>
+    }
+    <div class="queue-list-heading"><h3>@(Playback.OfflineOnly ? "Next from Offline" : "Next in queue") <span>@Playback.UpcomingCount</span></h3><button class="subtle-button" disabled="@(Playback.UpcomingCount == 0)" @onclick="Clear">Clear upcoming</button></div>
+    @if (loading) { <LoadingIndicator Label="Loading queue…" /> }
+    @if (rows.Count == 0 && !loading) { <div class="queue-empty"><MusicIcon Name="queue" /><h3>Make time for another song</h3><p>Choose Play next or Add to queue from a song’s menu.</p></div> }
+    <ol class="queue-list" aria-label="Upcoming songs">
+        @foreach (var (row, localIndex) in rows.Select((row, index) => (row, index)))
+        {
+            var index = offset + localIndex;
+            <li @key="row.Entry.Id" data-queue-entry="@row.Entry.Id" draggable="true" @ondragstart="() => dragging = row.Entry.Id" @ondragover:preventDefault @ondrop="() => Drop(row.Entry.Id)">
+                <span class="queue-grip" aria-hidden="true"><MusicIcon Name="queue" /></span>
+                @if (row.Track is { } track)
+                {
+                    <TrackArtwork Track="track" AllowNetwork="false" />
+                    <div class="queue-track"><strong dir="auto">@track.Title</strong><MusicCreditLink Track="track" BeforeNavigate="OnClose" /><span class="queue-source" dir="auto">@track.Origin.SourceName</span>@if (row.Notice is not null || !track.Available) { <small>@(row.Notice ?? "Telegram unavailable · saved copy required")</small> }</div>
+                }
+                else { <div class="queue-track"><strong>Unavailable song</strong><span>Remove it or reconnect to refresh.</span></div> }
+                <div class="queue-row-actions">
+                    <button class="music-icon-button" aria-label="@($"Play queue entry {index + 1}")" title="Play now" disabled="@(row.Track is null || row.Track.Origin.Protected)" @onclick="() => Play(row.Entry.Id)"><MusicIcon Name="play" /></button>
+                    <details class="queue-entry-menu" name="queue-entry-actions">
+                        <summary class="music-icon-button" aria-label="@($"Queue actions for entry {index + 1}")"><MusicIcon Name="more" /></summary>
+                        <div>
+                            <button aria-label="@($"Move queue entry {index + 1} up")" disabled="@(index == 0)" @onclick="() => Move(row.Entry.Id, -1)"><MusicIcon Name="up" />Move up</button>
+                            <button aria-label="@($"Move queue entry {index + 1} down")" disabled="@(index + 1 >= Playback.UpcomingCount)" @onclick="() => Move(row.Entry.Id, 1)"><MusicIcon Name="down" />Move down</button>
+                            <button aria-label="@($"Remove queue entry {index + 1}")" @onclick="() => Remove(row.Entry.Id, localIndex)"><MusicIcon Name="close" />Remove</button>
+                        </div>
+                    </details>
+                </div>
+            </li>
+        }
+    </ol>
+    @if (error is not null) { <p class="music-error" role="alert">@error <button @onclick="Reload">Retry</button></p> }
+    </ChildContent>
+    <FooterContent>
+        @if (Playback.UpcomingCount > PageSize)
+        {
+            <div class="queue-paging"><button class="subtle-button" disabled="@(loading || offset == 0)" @onclick="Previous">Previous songs</button><span>@(offset + 1)–@(offset + rows.Count) of @Playback.UpcomingCount</span><button class="subtle-button" disabled="@(loading || offset + rows.Count >= Playback.UpcomingCount)" @onclick="More">Next songs</button></div>
+        }
+        <p class="queue-feedback" role="status" aria-live="polite">@feedback</p>
+        <div class="queue-mode-footer"><PlaybackModes /><span>@(Playback.Queue.Shuffle ? "Shuffled order" : "Queue order") · Repeat @Playback.Queue.Repeat.ToString().ToLowerInvariant()</span></div>
+    </FooterContent>
+</LibraryDialog>
+
+@code {
+    [Parameter] public bool Open { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private IReadOnlyList<QueueRow> rows = [];
+    private readonly CancellationTokenSource lifetime = new();
+    private bool loading, disposed;
+    private const int PageSize = 40;
+    private int offset;
+    private Guid? pageCurrent;
+    private long loadedVersion = -1, readVersion;
+    private string? feedback, error;
+    private Guid? dragging;
+    private string? focusEntry;
+    private int focusAction;
+    protected override void OnInitialized() => Playback.Changed += Changed;
+    protected override async Task OnParametersSetAsync() { if (Open && loadedVersion != Playback.QueueVersion) await Reload(); }
+    private void Changed() { if (!disposed && Open) _ = InvokeAsync(async () => { if (!disposed) { if (loadedVersion != Playback.QueueVersion) await Reload(); StateHasChanged(); } }); }
+    private async Task Reload()
+    {
+        var mine = ++readVersion; var version = Playback.QueueVersion;
+        if (pageCurrent != Playback.CurrentEntryId || offset >= Playback.UpcomingCount) offset = 0;
+        pageCurrent = Playback.CurrentEntryId;
+        loading = true; error = null;
+        try
+        {
+            var result = await Playback.QueuePageAsync(offset, PageSize, lifetime.Token);
+            if (mine != readVersion || disposed) return;
+            rows = result; loadedVersion = version;
+        }
+        catch (OperationCanceledException) when (disposed) { }
+        catch (Exception e) { if (mine == readVersion) error = e.Message.Split('\n')[0]; }
+        finally { if (mine == readVersion) loading = false; }
+    }
+    private async Task More() { offset += PageSize; await Reload(); }
+    private async Task Previous() { offset = Math.Max(0, offset - PageSize); await Reload(); }
+    private async Task Play(Guid id) { try { await Playback.SelectEntryAsync(id, lifetime.Token); feedback = "Playing your selected queue entry."; } catch (Exception e) { error = e.Message; } }
+    private async Task ToggleCurrent() { try { if (Playback.IsPlaying) await Playback.PauseAsync(); else await Playback.ResumeAsync(lifetime.Token); } catch (Exception e) { error = e.Message; } }
+    private void Move(Guid id, int direction) { focusEntry = id.ToString(); focusAction = direction < 0 ? 1 : 2; Playback.MoveEntry(id, direction); feedback = "Queue order updated. Shuffle is off."; }
+    private void Remove(Guid id, int index) { focusEntry = rows.ElementAtOrDefault(index + 1)?.Entry.Id.ToString() ?? rows.ElementAtOrDefault(index - 1)?.Entry.Id.ToString(); focusAction = 3; Playback.RemoveEntry(id); feedback = "Removed from queue."; }
+    private void Clear() { Playback.ClearUpcoming(); feedback = "Upcoming songs cleared. Current playback is unchanged."; }
+    private void Drop(Guid target)
+    {
+        if (dragging is not { } from) return;
+        var list = Playback.Upcoming.ToList(); var delta = list.FindIndex(e => e.Id == target) - list.FindIndex(e => e.Id == from);
+        if (delta != 0) Move(from, delta); dragging = null;
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (focusEntry is not { } id || loading) return;
+        focusEntry = null;
+        await JS.InvokeVoidAsync("channelwaveFocusQueueEntry", id, focusAction);
+    }
+    public ValueTask DisposeAsync() { disposed = true; Playback.Changed -= Changed; lifetime.Cancel(); lifetime.Dispose(); return ValueTask.CompletedTask; }
+}

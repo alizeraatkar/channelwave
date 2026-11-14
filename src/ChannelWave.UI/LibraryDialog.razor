@@ -1,0 +1,68 @@
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<dialog @ref="element" class="library-dialog @Class" aria-labelledby="@headingId">
+    @if (DragHandle) { <div class="library-dialog-drag-handle" data-dialog-handle aria-hidden="true"><span></span></div> }
+    <header>
+        @if (HeaderContent is not null)
+        {
+            <h2 id="@headingId" class="music-sr-only">@Title</h2>
+            <button class="music-icon-button" aria-label="Minimize player" @onclick="CloseAsync"><MusicIcon Name="chevron" /></button>
+            @HeaderContent
+        }
+        else
+        {
+            <h2 id="@headingId">@Title</h2><button class="icon-button" aria-label="@($"Close {Title.ToLowerInvariant()}")" @onclick="CloseAsync"><MusicIcon Name="close" /></button>
+        }
+    </header>
+    <div class="library-dialog-content">@ChildContent</div>
+    @if (FooterContent is not null) { <footer>@FooterContent</footer> }
+</dialog>
+
+@code {
+    [Parameter] public bool Open { get; set; }
+    [Parameter, EditorRequired] public string Title { get; set; } = "";
+    [Parameter] public string? Class { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+    [Parameter] public RenderFragment? HeaderContent { get; set; }
+    [Parameter] public RenderFragment? FooterContent { get; set; }
+    [Parameter] public bool DragHandle { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    private readonly string headingId = $"dialog-{Guid.NewGuid():N}";
+    private ElementReference element;
+    private IJSObjectReference? module;
+    private DotNetObjectReference<LibraryDialog>? reference;
+    private bool shown, disposed;
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (disposed || Open == shown) return;
+        module ??= await JS.InvokeAsync<IJSObjectReference>("import", "./_content/ChannelWave.UI/navigation.js");
+        if (disposed) { await module.DisposeAsync(); module = null; return; }
+        reference ??= DotNetObjectReference.Create(this);
+        shown = Open;
+        if (shown) await module.InvokeVoidAsync("openLibraryDialog", element, reference);
+        else await module.InvokeVoidAsync("closeLibraryDialog", element);
+    }
+
+    [JSInvokable] public Task RequestCloseAsync() => CloseAsync();
+    public async Task CloseAsync()
+    {
+        if (disposed) return;
+        if (module is not null && shown) await module.InvokeVoidAsync("closeLibraryDialog", element);
+        shown = false;
+        await OnClose.InvokeAsync();
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true;
+        if (module is not null)
+        {
+            try { await module.InvokeVoidAsync("closeLibraryDialog", element); await module.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+        reference?.Dispose();
+    }
+}

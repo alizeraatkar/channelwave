@@ -1,0 +1,34 @@
+@using ChannelWave.Core
+@using System.Text.Json
+
+@if (Destination is { } destination)
+{
+    <a class="music-credit-link @Class" href="@Href(destination)" dir="auto" aria-label="@($"Browse {(Kind == "albums" ? "album" : "artist")} {Label}")"
+       @onclick="() => Navigate(destination)" @onclick:preventDefault="Browse.HasDelegate" @onclick:stopPropagation>@Label</a>
+}
+else
+{
+    <span class="@Class" dir="auto">@Label</span>
+}
+
+@code {
+    [Parameter, EditorRequired] public Track Track { get; set; } = null!;
+    [Parameter] public string Kind { get; set; } = "artists";
+    [Parameter] public string Class { get; set; } = "";
+    [Parameter] public EventCallback BeforeNavigate { get; set; }
+    [CascadingParameter(Name = "BrowseMusicCredit")] public EventCallback<MusicCreditDestination> Browse { get; set; }
+    private string Label => Kind == "albums" ? Track.EmbeddedMetadata?.Album?.Trim() ?? "" : Track.Performer;
+    private MusicCreditDestination? Destination => (Kind == "albums" ? LibraryDiscovery.AlbumKey(Track) : LibraryDiscovery.ArtistKey(Track)) is { } key
+        ? new(Track.Origin.AccountId, Kind, key, Label) : null;
+    private static string Href(MusicCreditDestination destination)
+    {
+        var state = JsonSerializer.Serialize(new { Mode = destination.Kind, Group = destination.Key, Label = destination.Label,
+            Order = destination.Kind == "albums" ? LibraryOrder.Album : LibraryOrder.Title, Criteria = new LibrarySearchCriteria(), Source = (long?)null });
+        return "#view=library&browse=" + Uri.EscapeDataString(Uri.EscapeDataString(state));
+    }
+    private async Task Navigate(MusicCreditDestination destination)
+    {
+        await BeforeNavigate.InvokeAsync();
+        await Browse.InvokeAsync(destination);
+    }
+}

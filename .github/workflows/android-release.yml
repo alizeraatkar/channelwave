@@ -1,0 +1,222 @@
+name: Android release
+
+on:
+  workflow_call:
+    inputs:
+      sha: { type: string, required: true }
+      version: { type: string, required: true }
+      build-number: { type: string, required: true }
+    secrets:
+      ANDROID_KEYSTORE_BASE64: { required: true }
+      ANDROID_KEYSTORE_PASSWORD: { required: true }
+      ANDROID_KEY_ALIAS: { required: true }
+      ANDROID_KEY_PASSWORD: { required: true }
+      TELEGRAM_API_ID: { required: true }
+      TELEGRAM_API_HASH: { required: true }
+
+permissions:
+  contents: read
+
+env:
+  NUGET_PACKAGES: ${{ github.workspace }}/.tools/nuget-application
+  RELEASE_BUILD_NUMBER: ${{ inputs.build-number }}
+  DOTNET_NOLOGO: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
+  MAUI_PROJECT: src/ChannelWave.Host.Maui/ChannelWave.Host.Maui.csproj
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ inputs.sha }}', persist-credentials: false }
+      - name: Cache pinned ARM64 native libraries
+        id: tdlib
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: artifacts/tdlib/android
+          key: tdlib-android-arm64-v3-${{ runner.os }}-${{ hashFiles('vendor/tdlib.lock.json', '.github/release.json', 'scripts/tdlib.Dockerfile', 'scripts/tdlib-android.Dockerfile', 'scripts/build-tdlib-android.ps1', 'scripts/tdlib-android-probe.c') }}
+      - name: Reserve disk space on the native build runner
+        if: steps.tdlib.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          test "$RUNNER_ENVIRONMENT" = github-hosted
+          df -h /
+          # This dedicated ephemeral runner only needs Docker and PowerShell.
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup /usr/local/swift /opt/hostedtoolcache/CodeQL
+          docker image prune --all --force
+          df -h /
+          available=$(df --output=avail -B1 / | tail -n 1)
+          if (( available < 24 * 1024 * 1024 * 1024 )); then
+            echo '::error::Native compilation needs at least 24 GiB free on this dedicated runner.'
+            exit 1
+          fi
+      - name: Build pinned ARM64 TDLib and static OpenSSL
+        if: steps.tdlib.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./scripts/build-tdlib-android.ps1 -Abi arm64-v8a -BuildJobs 2
+      - name: Verify native checksums and architecture
+        shell: bash
+        run: |
+          python3 scripts/verify-native.py artifacts/tdlib/android android
+      - name: Upload native libraries for APK packaging
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tdlib-android-arm64
+          path: artifacts/tdlib/android/
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 14
+
+  android:
+    needs: native
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ inputs.sha }}', persist-credentials: false }
+      - name: Validate version and required secrets
+        id: version
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: |
+          python3 - <<'PY'
+          import os, re
+          version = os.environ['INPUT_VERSION']
+          if not re.fullmatch(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?', version):
+              raise SystemExit('Use a vMAJOR.MINOR.PATCH tag (optional -prerelease), or a manual version without v.')
+          required = ['ANDROID_KEYSTORE_BASE64', 'ANDROID_KEY_ALIAS', 'ANDROID_KEY_PASSWORD',
+                      'ANDROID_KEYSTORE_PASSWORD', 'TELEGRAM_API_ID', 'TELEGRAM_API_HASH']
+          missing = [name for name in required if not os.environ.get(name)]
+          if missing:
+              raise SystemExit('Configure GitHub Actions secrets: ' + ', '.join(missing))
+          if not re.fullmatch(r'[1-9][0-9]*', os.environ['TELEGRAM_API_ID']) or int(os.environ['TELEGRAM_API_ID']) > 2147483647:
+              raise SystemExit('TELEGRAM_API_ID must be a positive 32-bit integer.')
+          if not re.fullmatch(r'[0-9a-fA-F]{32}', os.environ['TELEGRAM_API_HASH']):
+              raise SystemExit('TELEGRAM_API_HASH must contain 32 hexadecimal characters.')
+          if not 0 < int(os.environ['RELEASE_BUILD_NUMBER']) <= 2100000000:
+              raise SystemExit('GitHub run number exceeds the Android version-code range.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'version={version}\n')
+          PY
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          global-json-file: global.json
+      - uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5
+        with:
+          distribution: microsoft
+          java-version: '21'
+      - name: Install MAUI Android workload
+        shell: pwsh
+        run: ./scripts/install-workloads.ps1 -Workloads maui-android
+      - name: Install matching Android SDK components
+        run: >-
+          dotnet build "$MAUI_PROJECT" -t:InstallAndroidDependencies
+          -f net10.0-android -p:ChannelWaveTarget=net10.0-android
+          -p:ChannelWaveAndroidRelease=true
+          -p:RestoreLockedMode=true
+          -p:AndroidSdkDirectory="$ANDROID_HOME" -p:JavaSdkDirectory="$JAVA_HOME"
+          -p:AcceptAndroidSdkLicenses=true
+      - name: Download verified native libraries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: tdlib-android-arm64
+          path: artifacts/tdlib/android
+      - name: Verify native checksums and architecture
+        shell: bash
+        run: |
+          python3 scripts/verify-native.py artifacts/tdlib/android android
+      - name: Restore locked Android release dependencies
+        run: >-
+          dotnet restore "$MAUI_PROJECT" --locked-mode
+          -p:ChannelWaveTarget=net10.0-android -p:ChannelWaveAndroidRelease=true
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with: { name: reservation, path: artifacts }
+      - name: Prepare signing key and packaged Telegram configuration
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+        run: |
+          python3 - <<'PY'
+          import base64, json, os
+          from pathlib import Path
+          keystore = Path(os.environ['RUNNER_TEMP']) / 'channelwave.keystore'
+          keystore.write_bytes(base64.b64decode(''.join(os.environ['ANDROID_KEYSTORE_BASE64'].split()), validate=True))
+          keystore.chmod(0o600)
+          config = Path('src/ChannelWave.Host.Maui/Resources/Raw/telegram.json')
+          config.write_text(json.dumps({'apiId': int(os.environ['TELEGRAM_API_ID']), 'apiHash': os.environ['TELEGRAM_API_HASH']}) + '\n')
+          PY
+      - name: Publish signed ARM64 APK
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: >-
+          dotnet publish "$MAUI_PROJECT" -c Release -f net10.0-android --no-restore
+          -p:ChannelWaveTarget=net10.0-android -p:ChannelWaveAndroidRelease=true
+          -p:ChannelWaveTdlibAndroidRoot="$GITHUB_WORKSPACE/artifacts/tdlib/android"
+          -p:AndroidSdkDirectory="$ANDROID_HOME" -p:JavaSdkDirectory="$JAVA_HOME"
+          -p:ApplicationDisplayVersion="$RELEASE_VERSION" -p:ApplicationVersion="$RELEASE_BUILD_NUMBER"
+          -p:AndroidPackageFormats=apk -p:AndroidKeyStore=true
+          -p:AndroidSigningKeyStore="$RUNNER_TEMP/channelwave.keystore"
+          -p:AndroidSigningKeyAlias="$ANDROID_KEY_ALIAS"
+          -p:AndroidSigningKeyPass=env:ANDROID_KEY_PASSWORD
+          -p:AndroidSigningStorePass=env:ANDROID_KEYSTORE_PASSWORD
+          -o artifacts/android-publish
+      - name: Verify signed APK and collect release assets
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import os, shutil, zipfile
+          from pathlib import Path
+          apks = list(Path('artifacts/android-publish').glob('*-Signed.apk'))
+          if len(apks) != 1:
+              raise SystemExit(f'Expected one signed APK, found {len(apks)}.')
+          with zipfile.ZipFile(apks[0]) as apk:
+              native = 'lib/arm64-v8a/libtdjson.so'
+              expected = Path('artifacts/tdlib/android/arm64-v8a/libtdjson.so').read_bytes()
+              assert apk.read(native) == expected, 'APK does not contain the pinned ARM64 TDLib'
+          output = Path('artifacts/android-release')
+          output.mkdir(parents=True, exist_ok=True)
+          shutil.copyfile(apks[0], output / f'ChannelWave-{os.environ["RELEASE_VERSION"]}-android-arm64.apk')
+          with zipfile.ZipFile(output / 'TDLib-Android-notices.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+              root = Path('artifacts/tdlib/android')
+              for path in sorted((root / 'licenses').iterdir()):
+                  archive.write(path, path.relative_to(root))
+              for name in ['channelwave-build.json', 'SHA256SUMS']:
+                  archive.write(root / name, name)
+          PY
+          apksigner=$(find "$ANDROID_HOME/build-tools" -name apksigner -type f | sort -V | tail -n 1)
+          test -n "$apksigner"
+          "$apksigner" verify --verbose --print-certs artifacts/android-release/*.apk
+          python3 scripts/security-check.py artifacts artifacts/android-release
+          "$(dirname "$apksigner")/zipalign" -c -P 16 4 artifacts/android-release/*.apk
+          python3 scripts/verify-android-upgrade.py artifacts/android-release/*.apk "$(dirname "$apksigner")"
+          python3 scripts/release.py package --platform android --folder artifacts/android-release
+      - name: Remove signing material and restore configuration template
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/channelwave.keystore"
+          git restore -- src/ChannelWave.Host.Maui/Resources/Raw/telegram.json
+      - name: Upload signed release assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-android
+          path: artifacts/android-release/*
+          overwrite: true
+          if-no-files-found: error
+          retention-days: 14

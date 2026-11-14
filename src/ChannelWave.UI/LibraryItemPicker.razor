@@ -1,0 +1,83 @@
+@using ChannelWave.Core
+@implements IDisposable
+@inject ILibraryRepository Library
+<LibraryDialog Open="Open" Title="Add from Library" OnClose="OnClose">
+    <label class="picker-label">Item type<select value="@kind" @onchange="ChangeKind">@foreach (var type in Enum.GetValues<LibraryItemKind>()) { <option value="@type">@type</option> }</select></label>
+    <label class="picker-label">Find an item<input type="search" @bind="query" @bind:event="oninput" @bind:after="Search" placeholder="Search your library" /></label>
+    @if (loading) { <LoadingIndicator Label="Finding library items…" /> }
+    @if (error is not null) { <p role="alert" class="music-error">@error</p> }
+    @foreach (var item in items)
+    {
+        var pinned = Store.Value.Tabs.Any(tab => tab.Item?.Kind == item.Kind && tab.Item.Key == item.Key);
+        <button class="picker-item" disabled="@(pinned || saving)" @onclick="() => Pin(item)"><MusicIcon Name="@(pinned ? "check" : "plus")" /><span dir="auto">@item.Label</span></button>
+    }
+    @if (!loading && error is null && items.Count == 0) { <p>@(kind == LibraryItemKind.Source ? "No matching sources. Add a source to Library to find it here." : "No matching items. Add music or save a filter to find it here.")</p> }
+    @if (more) { <button class="outline-button" disabled="@loading" @onclick="More">Show more</button> }
+</LibraryDialog>
+@code {
+    [CascadingParameter] public LibraryPresentationStore Store { get; set; } = null!;
+    [Parameter] public bool Open { get; set; }
+    [Parameter] public IReadOnlyList<Playlist> Playlists { get; set; } = [];
+    [Parameter] public EventCallback OnClose { get; set; }
+    private LibraryItemKind kind;
+    private string query = "";
+    private string? error;
+    private bool wasOpen, loading, more, saving, disposed;
+    private long? resultsAccount;
+    private int limit = 30;
+    private List<LibraryItemReference> items = [];
+    private CancellationTokenSource? read;
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Open && (!wasOpen || resultsAccount != Store.Account)) { wasOpen = true; await Search(); }
+        else if (!Open) { wasOpen = false; read?.Cancel(); items = []; resultsAccount = null; }
+    }
+    private async Task ChangeKind(ChangeEventArgs e) { kind = Enum.Parse<LibraryItemKind>(e.Value?.ToString() ?? "Artist"); limit = 30; await Search(); }
+    private async Task More() { limit += 30; await Search(); }
+    private async Task Search()
+    {
+        read?.Cancel(); read?.Dispose(); read = new(); var ct = read.Token;
+        items = []; more = false; resultsAccount = Store.Account;
+        if (Store.Account is not { } account) return;
+        var searchKind = kind;
+        loading = true; error = null;
+        try
+        {
+            IEnumerable<LibraryItemReference> result;
+            if (searchKind is LibraryItemKind.Artist or LibraryItemKind.Album)
+            {
+                var groups = await Library.GroupsAsync(account, new(new(), Limit: limit + 1, GroupText: query), searchKind == LibraryItemKind.Artist ? "artists" : "albums", ct);
+                result = groups.Select(group => new LibraryItemReference(searchKind, group.Key, group.Label));
+            }
+            else if (searchKind == LibraryItemKind.Track)
+                result = (await Library.SearchAsync(account, new(new(query), Limit: limit + 1), ct)).Select(track => new LibraryItemReference(searchKind, track.Id.ToString(), track.Title));
+            else if (searchKind == LibraryItemKind.Playlist)
+                result = Playlists.Where(p => Matches(p.Name)).Select(p => new LibraryItemReference(searchKind, p.Id.ToString(), p.Name));
+            else if (searchKind == LibraryItemKind.Source)
+                result = (await Library.SourcesAsync(account, ct)).Where(source => source.AccountId == account && Matches(source.Name))
+                    .OrderBy(source => Metadata.Normalize(source.Name), StringComparer.Ordinal).ThenBy(source => source.ChatId)
+                    .Select(source => new LibraryItemReference(searchKind, source.ChatId.ToString(System.Globalization.CultureInfo.InvariantCulture), source.Name));
+            else result = Store.Value.Filters.Where(f => Matches(f.Name)).Select(f => new LibraryItemReference(searchKind, f.Id.ToString(), f.Name));
+            ct.ThrowIfCancellationRequested();
+            if (disposed || Store.Account != account || !Open) return;
+            var found = result.Take(limit + 1).ToList(); more = found.Count > limit; items = found.Take(limit).ToList();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception e) { if (!ct.IsCancellationRequested) error = e.Message; }
+        finally { if (!ct.IsCancellationRequested) loading = false; }
+    }
+    private bool Matches(string name) => LibrarySearchMatcher.Tokenize(query).All(term => Metadata.Normalize(name).Contains(term, StringComparison.Ordinal));
+    private async Task Pin(LibraryItemReference item)
+    {
+        if (saving || disposed || !Open || read?.IsCancellationRequested != false || resultsAccount is not { } account || Store.Account != account) return;
+        saving = true;
+        try
+        {
+            await Store.PinAsync(item, account);
+            if (!disposed && Open && Store.Account == account) await OnClose.InvokeAsync();
+        }
+        catch (Exception e) { if (!disposed && Store.Account == account) error = e.Message; }
+        finally { saving = false; }
+    }
+    public void Dispose() { disposed = true; read?.Cancel(); read?.Dispose(); }
+}

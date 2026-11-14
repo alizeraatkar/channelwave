@@ -1,0 +1,1 @@
+<Project Sdk="Microsoft.NET.Sdk"><PropertyGroup><OutputType>Exe</OutputType></PropertyGroup><ItemGroup><ProjectReference Include="../../src/ChannelWave.Telegram.Native/ChannelWave.Telegram.Native.csproj" /></ItemGroup></Project>

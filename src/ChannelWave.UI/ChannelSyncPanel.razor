@@ -1,0 +1,56 @@
+@using ChannelWave.Telegram
+
+<section class="channel-sync" aria-labelledby="channel-sync-title">
+    <div class="channel-sync-heading" aria-busy="@(Pending || Running && Progress.Phase != "watching" ? "true" : "false")">
+        <div><h3 id="channel-sync-title">Audio from selected sources</h3>
+            <p>Only sources you choose are indexed. Audio files download when you play.</p></div>
+        @if (Running)
+        {
+            <button disabled="@Pending" @onclick="OnPause">@if (Pending) { <LoadingIndicator Decorative="true" /> }@(Pending ? "Pausing…" : "Pause sync")</button>
+            <button disabled="@Pending" @onclick="OnStart">@(Progress.Failed > 0 ? "Retry sync" : "Refresh now")</button>
+        }
+        else
+        {
+            <button disabled="@(Disabled || Pending)" @onclick="OnStart">@if (Pending) { <LoadingIndicator Decorative="true" /> }@(Pending ? "Starting…" : Progress.Phase == "paused" ? "Resume sync" : Progress.Phase == "failed" || Progress.Failed > 0 ? "Retry sync" : "Sync selected sources")</button>
+        }
+    </div>
+    <div class="channel-sync-progress" role="status" aria-live="polite">
+        @if (Pending || Running && Progress.Phase != "watching") { <LoadingIndicator Decorative="true" /> }
+        @switch (Progress.Phase)
+        {
+            case "starting": <strong>Preparing your saved progress…</strong> break;
+            case "watching": <strong>Up to date. New music is added automatically while the app is active.</strong> break;
+            case "catchingUp": <strong>Catching up with your selected sources…</strong> break;
+            case "updating": <strong>Updating music from Telegram…</strong> break;
+            case "auditing": <strong>Checking older music. Progress is saved.</strong> break;
+            case "indexing": <strong>Indexing audio history…</strong> break;
+            case "waiting": <strong>Waiting before retrying</strong>
+                @if (Progress.RetryAt is { } retry) { <span>Next attempt after @retry.ToLocalTime().ToString("T").</span> } break;
+            case "paused": <strong>Sync paused. Your progress is saved.</strong> break;
+            case "completed": <strong>@(Progress.Failed > 0 ? "Scan finished with some selected sources skipped." : "Selected audio history is indexed.")</strong> break;
+            case "failed": <strong>Audio indexing stopped. Retry to continue from saved progress.</strong> break;
+            default: <span>Sync runs while the app is open. Unfinished work resumes after reconnecting unless you pause it.</span> break;
+        }
+        @if (Progress.Phase != "idle")
+        {
+            <span>@Progress.Found selected sources · @Progress.Completed fully indexed · @Progress.Pages pages this run
+                @if (Progress.Failed > 0) { <text> · @Progress.Failed skipped</text> }
+            </span>
+        }
+    </div>
+    @if (!string.IsNullOrEmpty(Progress.Current)) { <p class="channel-sync-current" dir="auto">@Progress.Current</p> }
+    @if (Error is not null || Progress.Error is not null && Progress.Phase is "waiting" or "failed" || Progress.Failed > 0)
+    {
+        <p class="channel-row-error" role="alert">@(Error ?? Progress.Error)</p>
+    }
+</section>
+
+@code {
+    [Parameter] public ChannelSyncProgress Progress { get; set; } = new();
+    [Parameter] public bool Running { get; set; }
+    [Parameter] public bool Pending { get; set; }
+    [Parameter] public bool Disabled { get; set; }
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public EventCallback OnStart { get; set; }
+    [Parameter] public EventCallback OnPause { get; set; }
+}

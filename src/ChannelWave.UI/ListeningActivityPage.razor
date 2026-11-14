@@ -1,0 +1,141 @@
+@using ChannelWave.Core
+@implements IDisposable
+@inject ILibraryRepository Library
+@inject PlaybackCoordinator Playback
+
+<section class="listening-page listening-combined" aria-labelledby="listening-title">
+    <header class="listening-heading">
+        <div><h1 id="listening-title">Listening activity</h1><p>Your listening, saved on this device.</p></div>
+        <div><ListeningIconButton Icon="shield" Label="Listening privacy settings" OnClick="OnPrivacy" /><ListeningIconButton Icon="info" Label="How listening is counted" OnClick="() => info = true" /><ListeningIconButton Icon="retry" Label="Refresh listening activity" Disabled="loading" OnClick="Refresh" /></div>
+    </header>
+    <div class="listening-filters listening-shared-filters">
+        <label>Period<select value="@period" @onchange="Period"><option value="today">Today</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="year">This year</option><option value="all">All time</option><option value="custom">Custom range</option></select></label>
+        <label>Source<select value="@source" @onchange="Source"><option value="">All sources</option>@foreach (var item in sourceOptions.OrderBy(x => x.Value, StringComparer.CurrentCultureIgnoreCase)) { <option value="@item.Key">@item.Value</option> }</select></label>
+        <ListeningIconButton Icon="close" Label="Reset filters" OnClick="Reset" />
+    </div>
+    @if (period == "custom")
+    {
+        <div class="listening-dates"><label>From<input type="date" @bind="fromDate" @bind:after="FiltersChanged" /></label><label>Through<input type="date" @bind="toDate" @bind:after="FiltersChanged" /></label></div>
+    }
+    <p class="listening-caption">@rangeLabel · @TimeZoneInfo.Local.DisplayName · Retained listening records</p>
+    @if (!Playback.ListeningPreferences.Collect) { <p role="status">History and statistics collection is paused. Previous listening is still shown.</p> }
+    @if (Playback.ListeningPreferences.RetentionDays > 0) { <p class="listening-caption">Keeping listens active in the last @Playback.ListeningPreferences.RetentionDays days.</p> }
+    <div class="listening-statistics-widgets" aria-busy="@loading.ToString().ToLowerInvariant()">
+        @if (error is not null) { <p class="music-error" role="alert">@error <ListeningIconButton Icon="retry" Label="Retry listening statistics" OnClick="RetryStatistics" /></p> }
+        @if (loading) { <LoadingIndicator Label="Calculating listening statistics…" /> }
+        <ListeningOverview Data="statistics" />
+        <ListeningChart Data="statistics" From="from" To="to" AllTime='@(period == "all")' />
+        <ListeningRankings Data="statistics" FilterRevision="filterRevision" OnFilter="Drilldown" />
+    </div>
+    <ListeningHistory @ref="history" Account="Account" From="from" To="to" SourceId="SelectedSource" RangeValid="rangeValid" FilterRevision="filterRevision" RefreshRevision="revision" OnSource="OnSource" />
+</section>
+<LibraryDialog Open="info" Title="How listening is counted" OnClose="() => info = false"><p>A play qualifies after 30 seconds or half the recording, whichever is shorter. Unknown duration uses 30 seconds. Each listening attempt qualifies once.</p><p>Listening time includes partial listens and real replays. Seeking, buffering, pauses, app mute and zero app volume add no listening time. Device output volume and whether someone heard the audio cannot be measured.</p><p>Listening time belongs to the local day it happened. A play belongs to when it qualified. Date ranges use local midnight boundaries, including daylight saving changes. All time means all retained listening records on this device.</p><p>Pausing collection stops history and statistics together. Removing a listen also removes its statistical contribution.</p></LibraryDialog>
+
+@code {
+    [Parameter] public long Account { get; set; }
+    [Parameter] public EventCallback OnPrivacy { get; set; }
+    [Parameter] public EventCallback<long> OnSource { get; set; }
+    private readonly CancellationTokenSource lifetime = new();
+    private CancellationTokenSource? read;
+    private ListeningStatistics? statistics;
+    private ListeningHistory? history;
+    private Dictionary<long, string> sourceOptions = [];
+    private string period = "7", source = "", rangeLabel = "";
+    private DateOnly? fromDate = DateOnly.FromDateTime(DateTime.Today).AddDays(-6), toDate = DateOnly.FromDateTime(DateTime.Today);
+    private long from, to, revision, filterRevision;
+    private bool loading, info, disposed, rangeValid, refreshPending, refreshing;
+    private string? error;
+    private long? SelectedSource => long.TryParse(source, out var chat) ? chat : null;
+
+    protected override async Task OnInitializedAsync()
+    {
+        Playback.PersistenceChanged += Changed;
+        await Load();
+    }
+
+    private void Changed()
+    {
+        if (disposed) return;
+        _ = InvokeAsync(async () =>
+        {
+            if (disposed) return;
+            refreshPending = true;
+            if (refreshing) return;
+            refreshing = true;
+            try
+            {
+                do { refreshPending = false; await Load(); } while (refreshPending && !disposed);
+            }
+            finally { refreshing = false; }
+        });
+    }
+
+    private async Task Load(bool refreshHistory = true)
+    {
+        if (disposed) return;
+        read?.Cancel(); read?.Dispose();
+        read = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
+        var token = read.Token;
+        loading = true; error = null;
+        try
+        {
+            if (refreshHistory)
+            {
+                try
+                {
+                    if (period == "custom" && (fromDate is null || toDate is null))
+                        throw new ArgumentException("Choose both start and end dates.");
+                    var range = ListeningPeriods.Range(period, DateTimeOffset.UtcNow, TimeZoneInfo.Local, fromDate, toDate);
+                    from = range.From; to = Math.Max(from, range.To); rangeValid = true;
+                    rangeLabel = period == "all" ? "All time" : $"{ListeningPeriods.Day(from, TimeZoneInfo.Local):d MMM yyyy} – {(period == "custom" ? toDate : ListeningPeriods.Day(Math.Max(from, to - 1), TimeZoneInfo.Local)):d MMM yyyy}";
+                }
+                catch (ArgumentException)
+                {
+                    rangeValid = false; from = to = 0; statistics = null; rangeLabel = "Choose a valid date range";
+                    throw;
+                }
+                finally { revision++; }
+            }
+            StateHasChanged();
+            if (Library is not IListeningStore store) throw new NotSupportedException("Listening storage is unavailable on this host.");
+            var result = await store.StatisticsAsync(Account, from, to, TimeZoneInfo.Local, SelectedSource, token);
+            var savedSources = await Library.SourcesAsync(Account, token);
+            token.ThrowIfCancellationRequested();
+            if (disposed) return;
+            statistics = result;
+            var choices = result.Sources.ToDictionary(x => x.Key, x => x.Value);
+            foreach (var item in savedSources) choices[item.ChatId] = item.Name;
+            if (SelectedSource is { } selected && !choices.ContainsKey(selected))
+                choices[selected] = sourceOptions.GetValueOrDefault(selected) ?? "Selected source";
+            sourceOptions = choices;
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested) { }
+        catch (Exception e) { if (!token.IsCancellationRequested && !disposed) error = e.Message; }
+        finally
+        {
+            if (!token.IsCancellationRequested && !disposed) { loading = false; StateHasChanged(); }
+        }
+    }
+
+    private Task FiltersChanged() { filterRevision++; statistics = null; return Load(); }
+    private Task Period(ChangeEventArgs e) { period = e.Value?.ToString() ?? "7"; return FiltersChanged(); }
+    private Task Source(ChangeEventArgs e) { source = e.Value?.ToString() ?? ""; return FiltersChanged(); }
+    private Task Reset()
+    {
+        period = "7"; source = "";
+        fromDate = DateOnly.FromDateTime(DateTime.Today).AddDays(-6); toDate = DateOnly.FromDateTime(DateTime.Today);
+        return FiltersChanged();
+    }
+    private Task Refresh() => Load();
+    private Task RetryStatistics() => Load(!rangeValid);
+    private async Task Drilldown(KeyValuePair<string, string> filter)
+    {
+        if (filter.Key == "sources") { source = filter.Value; await FiltersChanged(); }
+        if (history is not null) await history.RevealAsync(filter.Key == "artists" ? filter.Value : null);
+    }
+    public void Dispose()
+    {
+        disposed = true; Playback.PersistenceChanged -= Changed;
+        lifetime.Cancel(); read?.Cancel(); read?.Dispose(); lifetime.Dispose();
+    }
+}

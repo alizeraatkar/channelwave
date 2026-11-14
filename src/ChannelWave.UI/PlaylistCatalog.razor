@@ -1,0 +1,32 @@
+@using ChannelWave.Core
+<section class="playlist-catalog" aria-label="Playlists">
+    @if (!SearchMode)
+    {
+        <header class="collection-heading"><h1>Playlists</h1><CollectionDisplayToggle Value="Display" ValueChanged="OnDisplay" /></header>
+        <form class="create-playlist" @onsubmit="Create" @onsubmit:preventDefault><label for="new-playlist">New playlist</label><div><input id="new-playlist" @bind="name" maxlength="100" placeholder="Playlist name" /><button class="primary-button" disabled="@(Busy || string.IsNullOrWhiteSpace(name))"><MusicIcon Name="plus" />Create playlist</button></div></form>
+    }
+    <CollectionViewport Items="Matches" ItemKey="p => p.Id.ToString()" Class="collection-playlists" Grid="@(Display == CollectionDisplay.Grid)" Context="@($"playlists:{Display}:{Query}")" Enabled="true">
+        <RowTemplate Context="list">
+            <article class="collection-playlist" data-track-key="@list.Id"><button @onclick="() => OnSelect.InvokeAsync(list.Id)"><span class="collection-art-fallback"><MusicIcon Name="list" /></span><span><strong dir="auto">@list.Name</strong><small>@list.Tracks.Length songs</small></span></button><button class="icon-button" aria-label="@($"Pin {list.Name} to Home")" @onclick="() => Pin(list)"><MusicIcon Name="pin" /></button></article>
+        </RowTemplate>
+    </CollectionViewport>
+    @if (!Matches.Any()) { <p class="muted">No matching playlists.</p> }
+    @if (error is not null) { <p class="music-error" role="alert">@error</p> }
+</section>
+@code {
+    [CascadingParameter] public LibraryPresentationStore Store { get; set; } = null!;
+    [Parameter] public IReadOnlyList<Playlist> Playlists { get; set; } = [];
+    [Parameter] public string Query { get; set; } = "";
+    [Parameter] public bool SearchMode { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public CollectionDisplay Display { get; set; } = CollectionDisplay.Grid;
+    [Parameter] public EventCallback<CollectionDisplay> OnDisplay { get; set; }
+    [Parameter] public EventCallback<Guid> OnSelect { get; set; }
+    [Parameter] public EventCallback<PlaylistEdit> OnEdit { get; set; }
+    private string name = "";
+    private string? error;
+    private IReadOnlyList<Playlist> Matches { get; set; } = [];
+    protected override void OnParametersSet() => Matches = Playlists.Where(p => LibrarySearchMatcher.Tokenize(Query).All(term => Metadata.Normalize(p.Name).Contains(term, StringComparison.Ordinal))).ToArray();
+    private async Task Create() { try { await OnEdit.InvokeAsync(new(PlaylistAction.Create, Name: name)); name = ""; } catch (Exception e) { error = e.Message; } }
+    private async Task Pin(Playlist list) { try { await Store.PinAsync(new(LibraryItemKind.Playlist, list.Id.ToString(), list.Name)); } catch (Exception e) { error = e.Message; } }
+}

@@ -1,0 +1,121 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+
+    <PropertyGroup>
+        <TargetFramework /><TargetFrameworks>net10.0-android</TargetFrameworks>
+        <TargetFrameworks Condition="!$([MSBuild]::IsOSPlatform('linux'))">$(TargetFrameworks);net10.0-ios;net10.0-maccatalyst</TargetFrameworks>
+        <TargetFrameworks Condition="$([MSBuild]::IsOSPlatform('windows'))">$(TargetFrameworks);net10.0-windows10.0.19041.0</TargetFrameworks>
+
+        <TargetFrameworks Condition="'$(ChannelWaveTarget)' != ''">$(ChannelWaveTarget)</TargetFrameworks>
+        <!-- Note for MacCatalyst:
+            The default runtime is maccatalyst-x64, except in Release config, in which case the default is maccatalyst-x64;maccatalyst-arm64.
+            When specifying both architectures, use the plural <RuntimeIdentifiers> instead of the singular <RuntimeIdentifier>.
+            The Mac App Store will NOT accept apps with ONLY maccatalyst-arm64 indicated;
+            either BOTH runtimes must be indicated or ONLY macatalyst-x64. -->
+        <!-- For example: <RuntimeIdentifiers>maccatalyst-x64;maccatalyst-arm64</RuntimeIdentifiers> -->
+
+        <OutputType>Exe</OutputType>
+        <RootNamespace>ChannelWave.Host.Maui</RootNamespace>
+        <UseMaui>true</UseMaui>
+        <SingleProject>true</SingleProject>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <EnableDefaultCssItems>false</EnableDefaultCssItems>
+        <Nullable>enable</Nullable>
+
+        <!-- Enable XAML source generation for faster build times and improved performance.
+             This generates C# code from XAML at compile time instead of runtime inflation.
+             To disable, remove this line.
+             For individual files, you can override by setting Inflator metadata:
+               <MauiXaml Update="MyPage.xaml" Inflator="Default" /> (reverts to defaults: Runtime for Debug, XamlC for Release)
+               <MauiXaml Update="MyPage.xaml" Inflator="Runtime" /> (force runtime inflation) -->
+        <MauiXamlInflator>SourceGen</MauiXamlInflator>
+
+        <!-- Display name -->
+        <ApplicationTitle>ChannelWave</ApplicationTitle>
+
+        <!-- App Identifier -->
+        <ApplicationId>dev.channelwave.app</ApplicationId>
+
+        <!-- Versions -->
+        <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
+        <ApplicationVersion>1</ApplicationVersion>
+
+        <!-- To develop, package, and publish an app to the Microsoft Store, see: https://aka.ms/MauiTemplateUnpackaged -->
+        <WindowsPackageType>None</WindowsPackageType>
+
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios'">17.0</SupportedOSPlatformVersion>
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst'">17.0</SupportedOSPlatformVersion>
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">29.0</SupportedOSPlatformVersion>
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</SupportedOSPlatformVersion>
+        <TargetPlatformMinVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows'">10.0.17763.0</TargetPlatformMinVersion>
+    </PropertyGroup>
+
+    <!-- Keep the Android release graph separate from the Windows development lockfile. -->
+    <PropertyGroup Condition="'$(ChannelWaveAndroidRelease)' != 'true' and ('$(ChannelWaveTarget)' == 'net10.0-android' or ('$(ChannelWaveTarget)' == '' and $([MSBuild]::IsOSPlatform('linux'))))">
+        <NuGetLockFilePath>packages.android.lock.json</NuGetLockFilePath>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(ChannelWaveRelease)' == 'true' and '$(ChannelWaveAndroidRelease)' != 'true'">
+        <RuntimeIdentifier>$(ChannelWaveReleaseRid)</RuntimeIdentifier>
+        <NuGetLockFilePath>packages.$(RuntimeIdentifier).lock.json</NuGetLockFilePath>
+    </PropertyGroup>
+    <PropertyGroup Condition="'$(ChannelWaveAndroidRelease)' == 'true'">
+        <NuGetLockFilePath>packages.android-release.lock.json</NuGetLockFilePath>
+        <RuntimeIdentifier>android-arm64</RuntimeIdentifier>
+    </PropertyGroup>
+
+    <ItemGroup>
+        <!-- App Icon -->
+        <MauiIcon Include="Resources\AppIcon\appicon.svg" ForegroundFile="..\ChannelWave.UI\wwwroot\brand\channelwave-mark.svg" ForegroundScale="0.65" Color="#121212" />
+
+        <!-- Splash Screen -->
+        <MauiSplashScreen Include="Resources\Splash\splash.svg" Color="#121212" BaseSize="128,128" />
+
+        <!-- Images -->
+        <MauiImage Include="Resources\Images\*" />
+        <MauiImage Update="Resources\Images\dotnet_bot.svg" BaseSize="168,208" />
+
+        <!-- Custom Fonts -->
+        <MauiFont Include="Resources\Fonts\*" />
+
+        <!-- Raw Assets (also remove the "Resources\Raw" prefix) -->
+        <MauiAsset Include="Resources\Raw\**" LogicalName="%(RecursiveDir)%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.Maui.Controls" />
+        <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" />
+        <PackageReference Include="Microsoft.Extensions.Logging.Debug" />
+    </ItemGroup>
+
+    <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+        <PackageReference Include="Xamarin.GooglePlayServices.Cast.Framework" />
+    </ItemGroup>
+
+    <PropertyGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios' and '$(ChannelWaveIosCastSdkRoot)' != ''">
+        <DefineConstants>$(DefineConstants);CHANNELWAVE_IOS_CAST</DefineConstants>
+    </PropertyGroup>
+    <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios' and '$(ChannelWaveIosCastSdkRoot)' != ''">
+        <NativeReference Include="$(ChannelWaveIosCastSdkRoot)/GoogleCast.xcframework" Kind="Framework" ForceLoad="true" SmartLink="false"
+                         Frameworks="Accelerate AVFoundation CoreBluetooth CoreMedia Foundation MediaAccessibility MediaPlayer Network QuartzCore Security SystemConfiguration UIKit WebKit"
+                         LinkerFlags="-ObjC -lc++ -lz" />
+        <NativeReference Include="$(ChannelWaveIosCastSdkRoot)/libChannelWaveCastBridge.a" Kind="Static" ForceLoad="true" SmartLink="false" />
+        <BundleResource Include="$(ChannelWaveIosCastSdkRoot)/GoogleCast.xcframework/ios-arm64/GoogleCast.framework/GoogleCastCoreResources.bundle/**/*"
+                        LogicalName="GoogleCastCoreResources.bundle/%(RecursiveDir)%(Filename)%(Extension)" />
+        <BundleResource Include="$(ChannelWaveIosCastSdkRoot)/GoogleCast.xcframework/ios-arm64/GoogleCast.framework/GoogleCastUIResources.bundle/**/*"
+                        LogicalName="GoogleCastUIResources.bundle/%(RecursiveDir)%(Filename)%(Extension)" />
+    </ItemGroup>
+
+    <ItemGroup Condition="'$(ChannelWavePlaybackTest)' == 'true' and '$(Configuration)' == 'Debug' and $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+        <Compile Include="../../tests/android/PlaybackDeviceTests.cs" />
+        <Compile Include="../../tests/android/PlaybackCompletionDeviceTests.cs" Condition="'$(ChannelWaveLibraryPerformance)' == 'true'" />
+        <MauiAsset Include="../../tests/browser/fixtures/stream-tone.mp3" LogicalName="channelwave-playback-test.mp3" />
+    </ItemGroup>
+
+    <PropertyGroup Condition="'$(ChannelWaveLibraryPerformance)' == 'true' and '$(Configuration)' == 'Debug' and $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+        <DefineConstants>$(DefineConstants);CHANNELWAVE_LIBRARY_PERFORMANCE</DefineConstants>
+        <ApplicationId>dev.channelwave.app.performance</ApplicationId>
+        <RuntimeIdentifiers>android-arm64;android-x64</RuntimeIdentifiers>
+    </PropertyGroup>
+    <ItemGroup Condition="'$(ChannelWaveLibraryPerformance)' == 'true' and '$(Configuration)' == 'Debug' and $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+        <Compile Include="../../tests/android/LibraryPerformanceFixture.cs" />
+    </ItemGroup>
+<ItemGroup><ProjectReference Include="../ChannelWave.UI/ChannelWave.UI.csproj" /><ProjectReference Include="../ChannelWave.Telegram.Native/ChannelWave.Telegram.Native.csproj" /><ProjectReference Include="../ChannelWave.Storage.Sqlite/ChannelWave.Storage.Sqlite.csproj" /></ItemGroup><Import Project="NativeDependencies.targets" /></Project>

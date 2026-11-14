@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.BlazorWebAssembly">
+<PropertyGroup><ServiceWorkerAssetsManifest>service-worker-assets.js</ServiceWorkerAssetsManifest></PropertyGroup>
+
+<ItemGroup>
+<Content Update="wwwroot/channelwave.local.json" CopyToPublishDirectory="Never" />
+<ProjectReference Include="../ChannelWave.UI/ChannelWave.UI.csproj" />
+<ProjectReference Include="../ChannelWave.Platform.Browser/ChannelWave.Platform.Browser.csproj" />
+<PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly" />
+<PackageReference Include="Microsoft.AspNetCore.Components.WebAssembly.DevServer" />
+<!-- An explicit reference keeps locked restore independent of the runner's WASM workload. -->
+<PackageReference Include="Microsoft.NET.Sdk.WebAssembly.Pack" PrivateAssets="all" />
+<ServiceWorker Include="wwwroot/audio-worker.js" PublishedContent="wwwroot/audio-worker.js" />
+</ItemGroup>
+</Project>

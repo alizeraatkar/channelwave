@@ -1,0 +1,22 @@
+<Project>
+  <!-- Supply built and audited binaries. Missing dependencies are a publication error. -->
+  <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android' and '$(ChannelWaveTdlibAndroidRoot)' != ''">
+    <AndroidNativeLibrary Include="$(ChannelWaveTdlibAndroidRoot)/arm64-v8a/*.so" Abi="arm64-v8a" />
+    <AndroidNativeLibrary Include="$(ChannelWaveTdlibAndroidRoot)/x86_64/*.so" Abi="x86_64" />
+  </ItemGroup>
+  <ItemGroup Condition="($([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'ios' or $([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'maccatalyst') and '$(ChannelWaveTdlibAppleArchive)' != ''">
+    <NativeReference Include="$(ChannelWaveTdlibAppleArchive)">
+      <Kind>Static</Kind><ForceLoad>true</ForceLoad><IsCxx>true</IsCxx><SmartLink>false</SmartLink>
+      <Frameworks>Foundation Security SystemConfiguration</Frameworks>
+      <LinkerFlags>-lz -liconv -lc++</LinkerFlags>
+    </NativeReference>
+  </ItemGroup>
+  <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'windows' and '$(ChannelWaveTdlibWindowsRoot)' != ''">
+    <Content Include="$(ChannelWaveTdlibWindowsRoot)/*.dll" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <Target Name="RequireTelegramNativeBinaries" BeforeTargets="Publish">
+    <Error Condition="'$(TargetPlatformIdentifier)' == 'windows' and !Exists('$(ChannelWaveTdlibWindowsRoot)/tdjson.dll')" Text="Set ChannelWaveTdlibWindowsRoot to the pinned TDLib DLL directory before publishing." />
+    <Error Condition="'$(TargetPlatformIdentifier)' == 'android' and !Exists('$(ChannelWaveTdlibAndroidRoot)/arm64-v8a/libtdjson.so')" Text="Set ChannelWaveTdlibAndroidRoot to the pinned Android ABI directories before publishing." />
+    <Error Condition="('$(TargetPlatformIdentifier)' == 'ios' or '$(TargetPlatformIdentifier)' == 'maccatalyst') and !Exists('$(ChannelWaveTdlibAppleArchive)')" Text="Set ChannelWaveTdlibAppleArchive to the matching platform/architecture static archive, including dependencies, before publishing." />
+  </Target>
+</Project>

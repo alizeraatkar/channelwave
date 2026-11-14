@@ -1,0 +1,51 @@
+name: Apple unsigned compilation
+on:
+  workflow_call:
+    inputs:
+      sha: { type: string, required: true }
+permissions:
+  contents: read
+jobs:
+  compile:
+    runs-on: macos-26
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        platform: [ios, maccatalyst]
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.tools/nuget-application
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ inputs.sha }}', persist-credentials: false }
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with: { global-json-file: global.json }
+      - name: Select matching Apple SDK
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          xcodebuild -version | grep -Fx 'Xcode 26.6'
+          brew install gperf
+      - shell: pwsh
+        run: ./scripts/install-workloads.ps1 -Workloads 'maui-${{ matrix.platform }}'
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: native
+        with:
+          path: artifacts/tdlib/${{ matrix.platform }}
+          key: tdlib-${{ matrix.platform }}-v2-${{ hashFiles('vendor/tdlib.lock.json', '.github/release.json', 'scripts/build-tdlib-windows.ps1', 'scripts/build-tdlib-apple.sh', 'scripts/tdlib-linux.Dockerfile', 'scripts/verify-native.py') }}
+      - if: steps.native.outputs.cache-hit != 'true'
+        run: bash scripts/build-tdlib-apple.sh '${{ matrix.platform }}'
+      - run: python3 scripts/verify-native.py artifacts/tdlib/${{ matrix.platform }} ${{ matrix.platform }}
+      - if: steps.native.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: artifacts/tdlib/${{ matrix.platform }}
+          key: ${{ steps.native.outputs.cache-primary-key }}
+      - name: Locked unsigned Release build including native linking
+        shell: pwsh
+        run: |
+          $properties = @('-p:ChannelWaveRelease=true', '-p:SelfContained=true', '-p:EnableCodeSigning=false', '-p:CodesignRequireProvisioningProfile=false',
+            '-p:ChannelWaveTarget=net10.0-${{ matrix.platform }}', '-p:ChannelWaveReleaseRid=${{ matrix.platform }}-arm64',
+            "-p:ChannelWaveTdlibAppleArchive=$PWD/artifacts/tdlib/${{ matrix.platform }}/libtdjson-combined.a")
+          dotnet restore src/ChannelWave.Host.Maui --locked-mode @properties
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet build src/ChannelWave.Host.Maui -c Release -f 'net10.0-${{ matrix.platform }}' --no-restore @properties

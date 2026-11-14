@@ -1,0 +1,60 @@
+@using ChannelWave.Core
+@using System.Globalization
+<section class="listening-widget listening-activity" aria-labelledby="chart-title">
+    <header><h2 id="chart-title">Listening chart</h2><ListeningIconButton Icon="list" Label="Show listening activity data table" OnClick="() => table = !table" /></header>
+    <p class="listening-caption">Minutes heard by @bucketLabel · Includes partial listens</p>
+    @if (Data is null || Data.Milliseconds == 0) { <p class="listening-caption">No listening in this period.</p> }
+    <div class="listening-chart" role="img" aria-label="@($"Listening time by {bucketLabel}. {ListeningHistory.Time(Data?.Milliseconds ?? 0)} total. A data table follows.")">
+        <div class="listening-chart-axis"><span>@(ChartMaximum / 60_000) min</span><span>0</span></div>
+        <div class="listening-bars">
+            @foreach (var day in chart)
+            {
+                <div class="listening-bar-column"><div class="listening-bar" style="@($"height:{Math.Max(day.Milliseconds > 0 ? 1 : 0, day.Milliseconds / ChartMaximum * 100).ToString("0.##", CultureInfo.InvariantCulture)}%")" title="@($"{day.Label}: {ListeningHistory.Time(day.Milliseconds)}, {day.Plays} plays")"></div><span>@day.Label</span></div>
+            }
+        </div>
+    </div>
+    <p class="listening-chart-date">Date</p>
+    <details open="@table"><summary>Listening activity data</summary><table class="listening-data"><caption>Active listening time and qualified plays by local day</caption><thead><tr><th scope="col">Date</th><th scope="col">Time heard</th><th scope="col">Qualified plays</th></tr></thead><tbody>@foreach (var day in Data?.Days ?? []) { <tr><th scope="row">@day.Date.ToString("d MMM yyyy")</th><td>@ListeningHistory.Time(day.Milliseconds)</td><td>@day.Plays</td></tr> }</tbody></table></details>
+</section>
+@code {
+    [Parameter] public ListeningStatistics? Data { get; set; }
+    [Parameter] public long From { get; set; }
+    [Parameter] public long To { get; set; }
+    [Parameter] public bool AllTime { get; set; }
+    private bool table;
+    private string bucketLabel = "day";
+    private sealed record ChartBucket(string Label, double Milliseconds, int Plays);
+    private ChartBucket[] chart = [];
+    private double ChartMaximum => Math.Max(60_000, Math.Ceiling(chart.Select(x => x.Milliseconds).DefaultIfEmpty().Max() / 60_000) * 60_000);
+
+    protected override void OnParametersSet()
+    {
+        var days = (Data?.Days ?? []).ToDictionary(x => x.Date);
+        if (!AllTime && To > From)
+            for (var day = ListeningPeriods.Day(From, TimeZoneInfo.Local); day <= ListeningPeriods.Day(To - 1, TimeZoneInfo.Local); day = day.AddDays(1))
+                days.TryAdd(day, new(day, 0, 0));
+        if (days.Count > 62)
+        {
+            bucketLabel = "month";
+            chart = days.Values.GroupBy(x => new DateOnly(x.Date.Year, x.Date.Month, 1)).OrderBy(g => g.Key)
+                .Select(g => new ChartBucket(g.Key.ToString("MMM yy"), g.Sum(x => x.Milliseconds), g.Sum(x => x.Plays))).ToArray();
+            if (chart.Length > 24)
+            {
+                bucketLabel = "year";
+                chart = days.Values.GroupBy(x => x.Date.Year).OrderBy(g => g.Key)
+                    .Select(g => new ChartBucket(g.Key.ToString(CultureInfo.InvariantCulture), g.Sum(x => x.Milliseconds), g.Sum(x => x.Plays))).ToArray();
+            }
+        }
+        else if (days.Count > 14)
+        {
+            bucketLabel = "week (starting Monday)";
+            chart = days.Values.GroupBy(x => x.Date.AddDays(-(((int)x.Date.DayOfWeek + 6) % 7))).OrderBy(g => g.Key)
+                .Select(g => new ChartBucket(g.Key.ToString("d MMM"), g.Sum(x => x.Milliseconds), g.Sum(x => x.Plays))).ToArray();
+        }
+        else
+        {
+            bucketLabel = "day";
+            chart = days.Values.OrderBy(x => x.Date).Select(x => new ChartBucket(x.Date.ToString("d MMM"), x.Milliseconds, x.Plays)).ToArray();
+        }
+    }
+}

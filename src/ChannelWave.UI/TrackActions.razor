@@ -1,0 +1,81 @@
+@using ChannelWave.Core
+
+<div class="music-track-actions">
+    @if (!MenuOnly && Connected)
+    {
+        <button class="music-icon-button track-favorite @(Track.Favorite ? "music-favorited" : "")" disabled="@Busy" aria-pressed="@Track.Favorite.ToString().ToLowerInvariant()" aria-label="@(Track.Favorite ? "Remove favorite" : "Favorite track")" title="@(Track.Favorite ? "Remove favorite" : "Favorite track")" @onclick="() => OnFavorite.InvokeAsync(Track)">@if (FavoritePending) { <LoadingIndicator Decorative="true" /> } else { <MusicIcon Name="heart" /> }</button>
+    }
+    @if (!MenuOnly)
+    {
+        <button class="music-listen @(Playing ? "music-listen-playing" : "")" disabled="@ListenDisabled" aria-label="@ListenLabel" title="@ListenLabel" @onclick="() => OnListen.InvokeAsync(Track)">@if (Preparing) { <LoadingIndicator Decorative="true" /> } else { <MusicIcon Name="@(Playing ? "pause" : "play")" /> }<span class="music-sr-only">@ListenLabel</span></button>
+    }
+    <button @ref="more" class="music-icon-button track-more" aria-label="More actions" title="More actions" aria-haspopup="dialog" aria-expanded="@open.ToString().ToLowerInvariant()" @onclick="OpenAsync"><MusicIcon Name="more" /></button>
+</div>
+<LibraryDialog @ref="dialog" Open="@(open && Enabled)" Title="Song actions" Class="track-action-dialog" OnClose="() => open = false">
+    <p class="action-track-title" dir="auto">@Track.Title</p>
+    @if (OnPlayNext.HasDelegate)
+    {
+        <button disabled="@(Busy || Track.Origin.Protected || !Track.Available && !SavedOffline)" @onclick="() => RunAsync(OnPlayNext)"><MusicIcon Name="next" />Play next</button>
+        <button disabled="@(Busy || Track.Origin.Protected || !Track.Available && !SavedOffline)" @onclick="() => RunAsync(OnEnqueue)"><MusicIcon Name="queue" />Add to queue</button>
+    }
+    @if (Connected)
+    {
+        <button class="@(MenuOnly ? "" : "menu-track-favorite")" disabled="@Busy" aria-pressed="@Track.Favorite.ToString().ToLowerInvariant()" aria-label="@(Track.Favorite ? "Remove favorite" : "Favorite track")" @onclick="() => RunAsync(OnFavorite)"><MusicIcon Name="heart" />@(Track.Favorite ? "Remove favorite" : "Like song")</button>
+    }
+    <button disabled="@EditDisabled" @onclick='() => RunAsync(OnEdit)'><MusicIcon Name="edit" />Edit details</button>
+    <div class="compact-track-actions">
+        @if (CanSaveOffline) { <button class="@(SavedOffline ? "music-saved" : "")" disabled="@OfflineDisabled" @onclick='() => RunAsync(OnOffline)'><MusicIcon Name="@(SavedOffline ? "check" : "offline")" />@OfflineLabel</button> }
+        @if (Connected)
+        {
+            <button disabled="@DownloadDisabled" aria-label="Download" @onclick='() => RunAsync(OnDownload)'><MusicIcon Name="download" />Download a separate file</button>
+            <button disabled="@ListDisabled" aria-label="@ListLabel" @onclick='() => RunAsync(OnAdd)'><MusicIcon Name="list" />@(InList ? $"Remove from {ListName}" : $"Add to {ListName}")</button>
+            @if (OnChoosePlaylist.HasDelegate) { <button disabled="@ListDisabled" @onclick="() => RunAsync(OnChoosePlaylist)"><MusicIcon Name="plus" />Add to another playlist</button> }
+        }
+    </div>
+    @ExtraActions
+</LibraryDialog>
+
+@code {
+    [Parameter, EditorRequired] public Track Track { get; set; } = null!;
+    [Parameter] public string Context { get; set; } = "";
+    [Parameter] public bool Enabled { get; set; } = true;
+    [Parameter] public bool MenuOnly { get; set; }
+    [Parameter] public RenderFragment? ExtraActions { get; set; }
+    [Parameter] public bool Connected { get; set; }
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public bool CanSaveOffline { get; set; }
+    [Parameter] public bool SavedOffline { get; set; }
+    [Parameter] public bool Playing { get; set; }
+    [Parameter] public bool Preparing { get; set; }
+    [Parameter] public bool FavoritePending { get; set; }
+    [Parameter] public bool InList { get; set; }
+    [Parameter] public string ListName { get; set; } = "listening list";
+    [Parameter] public bool ListenDisabled { get; set; }
+    [Parameter] public bool EditDisabled { get; set; }
+    [Parameter] public bool OfflineDisabled { get; set; }
+    [Parameter] public bool DownloadDisabled { get; set; }
+    [Parameter] public bool ListDisabled { get; set; }
+    [Parameter] public string ListenLabel { get; set; } = "Play";
+    [Parameter] public EventCallback<Track> OnListen { get; set; }
+    [Parameter] public EventCallback<Track> OnFavorite { get; set; }
+    [Parameter] public EventCallback<Track> OnOffline { get; set; }
+    [Parameter] public EventCallback<Track> OnDownload { get; set; }
+    [Parameter] public EventCallback<Track> OnAdd { get; set; }
+    [Parameter] public EventCallback<Track> OnChoosePlaylist { get; set; }
+    [Parameter] public EventCallback<Track> OnEdit { get; set; }
+    [Parameter] public EventCallback<Track> OnPlayNext { get; set; }
+    [Parameter] public EventCallback<Track> OnEnqueue { get; set; }
+    private LibraryDialog? dialog;
+    private ElementReference more;
+    private bool open;
+    private string? previousContext;
+    private string OfflineLabel => SavedOffline ? "Remove offline copy" : "Save offline";
+    private string ListLabel => InList ? "Remove from playlist" : "Add to playlist";
+    protected override void OnParametersSet() { if (!Enabled || previousContext != Context) open = false; previousContext = Context; }
+    private async Task OpenAsync() { await more.FocusAsync(preventScroll: true); open = true; }
+    private async Task RunAsync(EventCallback<Track> action)
+    {
+        if (dialog is not null) await dialog.CloseAsync();
+        await action.InvokeAsync(Track);
+    }
+}

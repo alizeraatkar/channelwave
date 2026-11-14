@@ -1,0 +1,84 @@
+name: Release security
+on:
+  workflow_call:
+    inputs:
+      sha: { type: string, required: true }
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ inputs.sha }}', fetch-depth: 0, persist-credentials: false }
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with: { node-version: '24.15.0' }
+      - name: Verify security gate behavior with synthetic fixtures
+        run: python3 -m unittest discover -s tests/ci -p test_security_check.py -v
+      - name: Verify browser artifact tamper rejection
+        run: node --test tests/ci/tdweb-security.test.mjs
+      - name: Scan all reachable history, index and nonignored working files
+        run: python3 scripts/security-check.py secrets --report artifacts/security/secrets.json
+      - name: Audit every platform lockfile and the separate browser engine graph
+        run: python3 scripts/security-check.py dependencies --report artifacts/security/dependencies.json
+      - name: Preserve redacted security evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: security-${{ github.run_attempt }}
+          path: artifacts/security/*.json
+          retention-days: 14
+          if-no-files-found: warn
+  browser-runtime:
+    needs: audit
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { ref: '${{ inputs.sha }}', persist-credentials: false }
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with: { global-json-file: global.json }
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with: { node-version: '24.15.0', cache: npm }
+      - name: Verify Linux permissions with a second OS user
+        run: >-
+          docker run --rm --mount "type=bind,source=$PWD,target=/workspace,readonly"
+          mcr.microsoft.com/dotnet/sdk:10.0.302@sha256:72dd743782f2ae7e5476fd64f6a460045e3998dc862218b80e6944cba79a01b0
+          bash /workspace/scripts/verify-linux-profile.sh
+      - name: Rebuild and verify the pinned browser engine
+        shell: pwsh
+        run: ./scripts/build-tdweb.ps1
+      - name: Verify Cast capabilities, receiver restriction and revocation
+        run: >-
+          docker run --rm --mount "type=bind,source=$PWD,target=/workspace,readonly"
+          mcr.microsoft.com/dotnet/sdk:10.0.302@sha256:72dd743782f2ae7e5476fd64f6a460045e3998dc862218b80e6944cba79a01b0
+          bash /workspace/scripts/verify-cast-security.sh
+      - name: Publish guarded static output
+        run: node scripts/publish-vercel.mjs
+      - run: npm ci --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - name: Exercise enforced CSP, real WASM and synthetic cleanup/offline flows
+        env:
+          CHANNELWAVE_BROWSER: chromium
+          CHANNELWAVE_TEST_EXTERNAL_SERVER: '1'
+          CHANNELWAVE_TEST_PORT: '5196'
+          CHANNELWAVE_SECURITY_HEADERS: '1'
+          CHANNELWAVE_TEST_PUBLISHED: '1'
+          CHANNELWAVE_VERIFY_TDWEB: '1'
+        run: |
+          mkdir -p artifacts/security
+          node scripts/serve-security-test.mjs > artifacts/security/server.log 2>&1 &
+          server=$!
+          trap 'kill "$server"' EXIT
+          npm run test:browser -- security-headers.spec.mjs tdlib.spec.mjs audit.spec.mjs security-signout.spec.mjs offline.spec.mjs service-worker.spec.mjs pwa.spec.mjs
+      - name: Preserve browser evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: browser-security-${{ github.run_attempt }}
+          path: |
+            test-results/
+            artifacts/security/
+          retention-days: 14
+          if-no-files-found: warn

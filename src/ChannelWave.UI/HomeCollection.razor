@@ -1,0 +1,204 @@
+@using ChannelWave.Core
+@using ChannelWave.Telegram
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject ILibraryRepository Library
+@inject IRuntimeHost Host
+@inject TelegramSession Session
+@inject PlaybackCoordinator Playback
+@inject PlaybackMediaResolver Media
+@inject IJSRuntime JS
+@inject HomeSessionState HomeState
+@inject HomeCollectionReader Reader
+
+<section class="home-collection @(Preview ? "collection-preview" : "")" aria-label="@Tab.Label" @ref="element">
+    <header class="section-heading"><h2 dir="auto">@Tab.Label</h2>
+        @if (Preview) { <button class="subtle-button" @onclick="() => OnSelect.InvokeAsync(Tab.Id)">See all<MusicIcon Name="arrow" /></button> }
+        else { <CollectionDisplayToggle Value="Display" ValueChanged="SetDisplay" /> }
+    </header>
+    @if (!visible || loading && items.Count == 0) { <LoadingSkeleton Count="2" /> }
+    @if (error is not null) { <p class="music-error" role="alert">@error <button @onclick="Retry">Retry</button></p> }
+    @if (unavailable)
+    {
+        <p>This item is no longer available in your library.</p><button class="outline-button" @onclick="RemoveTab">Remove shortcut</button>
+    }
+    else if (Tab.Id == "playlists")
+    {
+        @if (!Preview)
+        { <PlaylistCatalog Playlists="Playlists" Display="Display" SearchMode="true" OnSelect="OpenPlaylist" /> }
+        else
+        {
+        <div class="collection-playlists @(Display == CollectionDisplay.Grid ? "as-grid" : "")">
+            @foreach (var list in Playlists.Take(Preview ? previewLimit : int.MaxValue))
+            {
+                <article class="collection-playlist"><button @onclick="() => OnOpen.InvokeAsync(new(LibraryItemKind.Playlist, list.Id.ToString(), list.Name))"><span class="collection-art-fallback"><MusicIcon Name="list" /></span><span><strong dir="auto">@list.Name</strong><small>@list.Tracks.Length tracks</small></span></button><button class="icon-button" aria-label="@($"Pin {list.Name} to Home")" @onclick="() => Pin(new(LibraryItemKind.Playlist, list.Id.ToString(), list.Name))"><MusicIcon Name="pin" /></button></article>
+            }
+        </div>
+        }
+    }
+    else
+    {
+        <div class="collection-tracks @(Display == CollectionDisplay.Grid ? "as-grid" : "")">
+            <TrackViewport Items="VisibleItems" Version="@(new { Busy, Connected = Session.AccountId == Account, Playing = Playback.IsPlaying, Current = Playback.CurrentTrack?.Id, Display })" Context="@($"home:{Account}:{Tab.Id}:{Display}")" Enabled="visible" CanLoadMore="@(!Preview && more)" Loading="loading" HasError="@(error is not null)" OnLoadMore="() => Load(true)" Grid="@(Display == CollectionDisplay.Grid)">
+                <RowTemplate Context="track">
+                    <article class="home-track" data-track-key="@($"{Account}:{track.Id}")" data-home-track="@track.Id">
+                        <button class="music-artwork-open" aria-label="@($"View artwork and player for {track.Title}")" @onclick="() => OnPreview.InvokeAsync(track)"><TrackArtwork Track="track" Offline="true" AllowNetwork="false" /></button>
+                        <div class="home-track-label"><strong dir="auto"><button class="music-title-link" @onclick="() => OnPreview.InvokeAsync(track)">@track.Title</button></strong><MusicCreditLink Track="track" /><small dir="auto">@track.Origin.SourceName</small></div>
+                        <TrackActions Track="track" Context="@($"home:{Account}:{Tab.Id}")" Connected="@(Session.AccountId == Account)" Busy="Busy" SavedOffline="savedIds.Contains(track.Id)" CanSaveOffline="Host.CanSaveOffline" Playing="@(Playback.CurrentTrack?.Id == track.Id && Playback.IsPlaying)"
+                            ListenDisabled="@(Busy || track.Origin.Protected || !track.Available && !savedIds.Contains(track.Id) || Session.AccountId != Account && !savedIds.Contains(track.Id))"
+                            EditDisabled="Busy" OfflineDisabled="@(Busy || track.Origin.Protected || Session.AccountId != Account)" DownloadDisabled="@(Busy || Session.AccountId != Account || track.Origin.Protected)" ListDisabled="@(Busy || Session.AccountId != Account)"
+                            OnListen="Play" OnFavorite='t => Action(t, "favorite")' OnOffline='t => Action(t, "offline")' OnDownload='t => Action(t, "download")' OnAdd='t => Action(t, "add")' OnChoosePlaylist='t => Action(t, "playlist")' OnEdit='t => Action(t, "edit")' OnPlayNext='t => Action(t, "next")' OnEnqueue='t => Action(t, "queue")'>
+                            <ExtraActions><button @onclick="() => Pin(new(LibraryItemKind.Track, track.Id.ToString(), track.Title))"><MusicIcon Name="pin" />Add to Home tabs</button></ExtraActions>
+                        </TrackActions>
+                    </article>
+                </RowTemplate>
+            </TrackViewport>
+        </div>
+        @if (visible && !loading && error is null && items.Count == 0) { <p class="muted">@(Tab.Id == "recent" ? "Your recent listens will appear here. Partial listens count too." : Session.AccountId != Account ? "No saved music in this collection. Connect Telegram to browse the rest." : "No music in this collection yet.")</p> }
+    }
+</section>
+@code {
+    [CascadingParameter] public LibraryPresentationStore Store { get; set; } = null!;
+    [Parameter] public long Account { get; set; }
+    [Parameter] public long Revision { get; set; }
+    [Parameter] public HomeTab Tab { get; set; } = null!;
+    [Parameter] public bool Preview { get; set; }
+    [Parameter] public int InitialLimit { get; set; } = 100;
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public IReadOnlyList<Playlist> Playlists { get; set; } = [];
+    [Parameter] public EventCallback<string> OnSelect { get; set; }
+    [Parameter] public EventCallback<Track> OnPreview { get; set; }
+    [Parameter] public EventCallback<HomeMusicAction> OnAction { get; set; }
+    [Parameter] public EventCallback<LibraryItemReference> OnOpen { get; set; }
+    private CollectionDisplay Display => Store.Display("home:" + (Preview ? "all" : Tab.Id), CollectionDisplay.Grid);
+    private ElementReference element;
+    private IJSObjectReference? module, observer;
+    private DotNetObjectReference<HomeCollection>? reference;
+    private HomeSessionState.Collection? collection;
+    private IReadOnlyList<Track> items => collection?.Snapshot?.Items ?? [];
+    private HashSet<Guid> savedIds => collection?.Snapshot?.SavedIds ?? [];
+    private bool loading => collection?.Loading ?? false;
+    private bool more => collection?.Snapshot?.More ?? false;
+    private bool unavailable => collection?.Snapshot?.Unavailable ?? false;
+    private bool visible, disposed;
+    private int previewLimit = 2;
+    private IReadOnlyList<Track>? previewSource;
+    private IReadOnlyList<Track> previewItems = [];
+    private int previousPreviewLimit;
+    private IReadOnlyList<Track> VisibleItems
+    {
+        get
+        {
+            if (!Preview) return items;
+            if (!ReferenceEquals(previewSource, items) || previousPreviewLimit != previewLimit)
+            {
+                previewSource = items; previousPreviewLimit = previewLimit;
+                previewItems = items.Take(previewLimit).ToArray();
+            }
+            return previewItems;
+        }
+    }
+    private string? actionError;
+    private string? error => actionError ?? collection?.Error;
+    private object? previous;
+    protected override async Task OnParametersSetAsync()
+    {
+        var list = Tab.Item?.Kind == LibraryItemKind.Playlist ? Playlists.FirstOrDefault(p => p.Id.ToString() == Tab.Item.Key)
+            : null;
+        var filter = Tab.Item?.Kind == LibraryItemKind.Filter ? Store.Value.Filters.FirstOrDefault(f => f.Id.ToString() == Tab.Item.Key) : null;
+        object current = (Account, Revision, Tab, Preview, Session.AccountId == Account, list, filter);
+        if (Equals(previous, current)) return;
+        previous = current;
+        var fingerprint = System.Text.Json.JsonSerializer.Serialize(new { Query = Query(), Online = Session.AccountId == Account });
+        collection = HomeState.Get(Account, Tab.Id, Preview, fingerprint);
+        if (collection.Snapshot is not null || !Preview || Tab.Id == "playlists") visible = true;
+        if (visible) await Load(false);
+    }
+    protected override async Task OnAfterRenderAsync(bool first)
+    {
+        if (!first) return;
+        if (!Preview) { await LoadVisibleAsync(); return; }
+        module = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/ChannelWave.UI/presentation.js");
+        if (disposed) { await module.DisposeAsync(); module = null; return; }
+        reference = DotNetObjectReference.Create(this);
+        observer = await module.InvokeAsync<IJSObjectReference>("observeSection", element, reference);
+    }
+    [JSInvokable] public async Task LoadVisibleAsync() { if (disposed) return; visible = true; await Load(false); if (!disposed) await InvokeAsync(StateHasChanged); }
+    [JSInvokable] public Task SetPreviewLimit(int count) => InvokeAsync(() => { if (!disposed) { previewLimit = count; StateHasChanged(); } });
+    private LibrarySearchRequest? Query()
+    {
+        var query = new LibrarySearchRequest(new(LikedOnly: Tab.Id == "liked"), Order: LibraryOrder.AddedNewest);
+        if (Tab.Item is { } item)
+        {
+            query = item.Kind switch
+            {
+                LibraryItemKind.Artist => query with { ArtistKey = item.Key, Order = LibraryOrder.Title },
+                LibraryItemKind.Album => query with { AlbumKey = item.Key, Order = LibraryOrder.Album },
+                LibraryItemKind.Source when long.TryParse(item.Key, System.Globalization.NumberStyles.AllowLeadingSign,
+                    System.Globalization.CultureInfo.InvariantCulture, out var chat) => query with { Chat = chat },
+                LibraryItemKind.Track when Guid.TryParse(item.Key, out var id) => query with { Playlist = [id] },
+                LibraryItemKind.Playlist => Playlists.FirstOrDefault(p => p.Id.ToString() == item.Key) is { } list ? query with { Playlist = list.Tracks, Order = null } : null,
+                LibraryItemKind.Filter => Store.Value.Filters.FirstOrDefault(f => f.Id.ToString() == item.Key)?.Query,
+                _ => null
+            };
+        }
+        if (query?.PlaylistId is { } playlistId)
+        {
+            var list = Playlists.FirstOrDefault(p => p.Id == playlistId);
+            if (list is null) return null;
+            query = query with { Playlist = list.Tracks };
+        }
+        return query;
+    }
+    private async Task Load(bool append)
+    {
+        if (disposed || collection is null || Tab.Id == "playlists") return;
+        var target = collection;
+        if (append && !target.Fresh) append = false;
+        var account = Account; var tab = Tab.Id; var preview = Preview; var online = Session.AccountId == account;
+        var query = Query(); var limit = InitialLimit;
+        var checkAvailability = Tab.Item?.Kind is LibraryItemKind.Track or LibraryItemKind.Artist or LibraryItemKind.Album;
+        var reader = Reader;
+        await HomeState.ReadAsync(target, append, (previous, ct) => reader.ReadAsync(account, tab, preview, online, query, limit, append, checkAvailability, previous, ct));
+    }
+    private Task Retry() { actionError = null; return Load(collection?.FailedAppend == true); }
+    private async Task Play(Track track)
+    {
+        try
+        {
+            if (Playback.CurrentTrack?.Id == track.Id && Playback.ListeningAccount == Account)
+            { if (Playback.IsPlaying) await Playback.PauseAsync(); else await Playback.ResumeAsync(); return; }
+            var account = Account; var offline = Session.AccountId != account;
+            Guid[] ids;
+            if (Tab.Id == "recent" && Library is IListeningStore store)
+            {
+                var recent = new List<Guid>();
+                for (var offset = 0; ; offset += 1000)
+                {
+                    var batch = await store.RecentTracksPageAsync(account, offset, 1000);
+                    recent.AddRange(batch.Select(t => t.TrackId));
+                    if (batch.Length < 1000) break;
+                }
+                ids = recent.Where(id => !offline || savedIds.Contains(id)).ToArray();
+            }
+            else if (Query() is { } query) ids = await Library.QueueTrackIdsAsync(account, query with { OfflineIds = query.Criteria.SavedOnly || offline ? savedIds.ToArray() : null });
+            else return;
+            if (disposed || Store.Account != account) return;
+            await Playback.StartQueueAsync(account, ids, track.Id, (id, ct) => Media.ResolveAsync(account, id, ct),
+                (item, ct) => Media.PrepareAsync(item, offline, ct), offline);
+            Playback.SetContext(new("home", Tab.Label));
+        }
+        catch (Exception e) { actionError = e.Message; }
+    }
+    private async Task Action(Track track, string action) { try { await OnAction.InvokeAsync(new(track, action)); } catch (Exception e) { actionError = e.Message; } }
+    private async Task Pin(LibraryItemReference item) { try { await Store.PinAsync(item); } catch (Exception e) { actionError = e.Message; } }
+    private Task OpenPlaylist(Guid id) => OnOpen.InvokeAsync(new(LibraryItemKind.Playlist, id.ToString(), Playlists.First(p => p.Id == id).Name));
+    private async Task RemoveTab() { try { await Store.RemoveTabAsync(Tab.Id); } catch (Exception e) { actionError = e.Message; } }
+    private async Task SetDisplay(CollectionDisplay value) { try { await Store.SetDisplayAsync("home:" + Tab.Id, value); } catch (Exception e) { actionError = e.Message; } }
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true;
+        if (observer is not null) { await observer.InvokeVoidAsync("dispose"); await observer.DisposeAsync(); }
+        if (module is not null) await module.DisposeAsync(); reference?.Dispose();
+    }
+}

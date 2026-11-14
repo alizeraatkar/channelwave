@@ -1,0 +1,19 @@
+{
+  "baseVersion": "0.1.0",
+  "channel": "beta",
+  "minimumBuildNumber": 6,
+  "toolchain": {
+    "sdk": "10.0.302",
+    "workload": "10.0.302.1",
+    "node": "24.15.0",
+    "xcode": "26.6",
+    "windowsGenerator": "Visual Studio 18 2026"
+  },
+  "platforms": {
+    "android": { "enabled": true, "rid": "android-arm64" },
+    "windows": { "enabled": true, "rid": "win-x64" },
+    "linux": { "enabled": true, "rid": "linux-x64" },
+    "macos": { "enabled": false, "rid": "maccatalyst-arm64", "reason": "Pending Developer ID signing and notarization setup" },
+    "ios": { "enabled": false, "rid": "ios-arm64", "reason": "Pending Apple distribution provisioning and internal TestFlight setup" }
+  }
+}

@@ -1,0 +1,95 @@
+@using ChannelWave.Core
+@inject HomeSessionState HomeState
+@inject IJSRuntime JS
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+<section class="music-home" aria-label="Home">
+    <div class="home-tab-strip" role="tablist" aria-label="Home collections">
+        @foreach (var tab in Store.Value.Tabs)
+        {
+            <button id="@($"home-tab-{tab.Id}")" role="tab" tabindex="@(Selected.Id == tab.Id ? 0 : -1)" aria-selected="@((Selected.Id == tab.Id).ToString().ToLowerInvariant())" aria-controls="home-tab-content" @onclick="() => OnTab.InvokeAsync(tab.Id)" @key="tab.Id"><bdi dir="auto">@tab.Label</bdi></button>
+        }
+    </div>
+    <div id="home-tab-content" role="tabpanel" aria-labelledby="@($"home-tab-{Selected.Id}")">
+        @if (Selected.Id == "all")
+        {
+            <div class="home-display-heading"><span>Your music</span><CollectionDisplayToggle Value='Store.Display("home:all", CollectionDisplay.Grid)' ValueChanged="SetDisplay" /></div>
+            @foreach (var tab in Store.Value.Tabs.Where(t => t.Id != "all"))
+            {
+                <HomeCollection @key="tab.Id" Account="Account" Revision="Revision" Tab="tab" Preview="true" Busy="Busy" Playlists="Playlists" OnSelect="OnTab" OnPreview="OnPreview" OnAction="OnAction" OnOpen="OnOpen" />
+            }
+        }
+        else
+        {
+            <HomeCollection @key="Selected.Id" Account="Account" Revision="Revision" Tab="Selected" Preview="false" InitialLimit="InitialLimit" Busy="Busy" Playlists="Playlists" OnSelect="OnTab" OnPreview="OnPreview" OnAction="OnAction" OnOpen="OnOpen" />
+        }
+    </div>
+    @if (error is not null) { <p class="music-error" role="alert">@error</p> }
+</section>
+@code {
+    [CascadingParameter] public LibraryPresentationStore Store { get; set; } = null!;
+    [Parameter] public long Account { get; set; }
+    [Parameter] public long Revision { get; set; }
+    [Parameter] public int InitialLimit { get; set; } = 100;
+    [Parameter] public bool Busy { get; set; }
+    [Parameter] public string TabId { get; set; } = "all";
+    [Parameter] public IReadOnlyList<Playlist> Playlists { get; set; } = [];
+    [Parameter] public EventCallback<string> OnTab { get; set; }
+    [Parameter] public EventCallback<Track> OnPreview { get; set; }
+    [Parameter] public EventCallback<HomeMusicAction> OnAction { get; set; }
+    [Parameter] public EventCallback<LibraryItemReference> OnOpen { get; set; }
+    private HomeTab Selected => Store.Value.Tabs.FirstOrDefault(t => t.Id == TabId) ?? Store.Value.Tabs.First(t => t.Id == "all");
+    private string? error;
+    private IJSObjectReference? navigation;
+    private IJSObjectReference? scrollObserver;
+    private DotNetObjectReference<MusicHome>? reference;
+    private (long Account, string View)? observedView;
+    private Task scrollBinding = Task.CompletedTask;
+    private long scrollVersion;
+    private bool disposed;
+    private string View => $"{Selected.Id}:{Store.Display("home:" + Selected.Id, CollectionDisplay.Grid)}";
+    protected override Task OnAfterRenderAsync(bool first)
+    {
+        if (disposed || observedView == (Account, View)) return Task.CompletedTask;
+        var account = Account; var view = View;
+        observedView = (account, view);
+        // Rendering and disposal can resume while JS interop is awaiting its
+        // response. Give each observer a single owner and skip obsolete binds.
+        return scrollBinding = BindScrollAsync(scrollBinding, account, view, ++scrollVersion);
+    }
+    private async Task BindScrollAsync(Task previous, long account, string view, long version)
+    {
+        await previous;
+        if (disposed || version != scrollVersion) return;
+        navigation ??= await JS.InvokeAsync<IJSObjectReference>("import", "./_content/ChannelWave.UI/navigation.js");
+        if (disposed || version != scrollVersion) return;
+        if (scrollObserver is { } previousObserver)
+        {
+            scrollObserver = null;
+            await previousObserver.InvokeVoidAsync("dispose"); await previousObserver.DisposeAsync();
+        }
+        if (disposed || version != scrollVersion) return;
+        reference ??= DotNetObjectReference.Create(this);
+        scrollObserver = await navigation.InvokeAsync<IJSObjectReference>("watchHomeScroll", reference, account, view, HomeState.Scroll(view));
+    }
+    [JSInvokable] public Task RememberScrollAsync(long account, string view, double top)
+    {
+        // JS flushes its final cached position during disposal. HomeState checks
+        // the account so a departing observer cannot write into another account.
+        HomeState.RememberScroll(account, view, top); return Task.CompletedTask;
+    }
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true;
+        scrollVersion++;
+        try
+        {
+            await scrollBinding;
+            if (scrollObserver is not null) { await scrollObserver.InvokeVoidAsync("dispose"); await scrollObserver.DisposeAsync(); }
+            if (navigation is not null) await navigation.DisposeAsync();
+        }
+        catch (JSDisconnectedException) { }
+        finally { reference?.Dispose(); }
+    }
+    private async Task SetDisplay(CollectionDisplay value) { try { await Store.SetDisplayAsync("home:all", value); } catch (Exception e) { error = e.Message; } }
+}

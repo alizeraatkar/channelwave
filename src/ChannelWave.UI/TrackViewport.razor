@@ -1,0 +1,100 @@
+@using ChannelWave.Core
+@using Microsoft.JSInterop
+@using System.Globalization
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+
+<div class="music-tracks virtual-tracks @(Grid ? "virtual-grid" : "")" @ref="element" data-loaded-count="@Items.Count" data-window-revision="@windowRevision" data-render-revision="@renderRevision">
+    @foreach (var block in blocks)
+    {
+        <div class="track-spacer" aria-hidden="true" style="height:@Pixels(block.Before)"></div>
+        @for (var index = block.Start; index < Math.Min(block.End, Items.Count); index++)
+        {
+            var track = Items[index];
+            <TrackViewportItem @key="(track.Origin.AccountId, track.Id)" Track="track" Version="Version" Context="Context" RowTemplate="RowTemplate" />
+        }
+    }
+    <div class="track-spacer" aria-hidden="true" style="height:@Pixels(tail)"></div>
+</div>
+
+@code {
+    [Parameter] public bool Grid { get; set; }
+    [Parameter] public IReadOnlyList<Track> Items { get; set; } = [];
+    [Parameter, EditorRequired] public RenderFragment<Track> RowTemplate { get; set; } = null!;
+    [Parameter] public object? Version { get; set; }
+    [Parameter] public string Context { get; set; } = "";
+    [Parameter] public bool Enabled { get; set; }
+    [Parameter] public bool CanLoadMore { get; set; }
+    [Parameter] public bool Loading { get; set; }
+    [Parameter] public bool HasError { get; set; }
+    [Parameter] public EventCallback OnLoadMore { get; set; }
+    public sealed record Block(int Start, int End, double Before);
+    private ElementReference element;
+    private IJSObjectReference? module;
+    private DotNetObjectReference<TrackViewport>? reference;
+    private IReadOnlyList<Track>? sentItems;
+    private object? signature;
+    private string? previousContext;
+    private Block[] blocks = [];
+    private double tail;
+    private long generation, windowRevision, renderRevision;
+    private bool render = true, configure = true, disposed;
+    private static string Pixels(double value) => Math.Max(0, value).ToString("0.###", CultureInfo.InvariantCulture) + "px";
+
+    protected override void OnParametersSet()
+    {
+        object next = (Items, Version, Context, Enabled, CanLoadMore, Loading, HasError, Grid);
+        if (Equals(signature, next)) return;
+        signature = next; render = configure = true;
+        if (previousContext != Context)
+        {
+            previousContext = Context; generation++; sentItems = null;
+            blocks = [new(0, Math.Min(24, Items.Count), 0)]; tail = 0;
+        }
+        else if (blocks.Length == 0 && Items.Count > 0) blocks = [new(0, Math.Min(24, Items.Count), 0)];
+    }
+    protected override bool ShouldRender() => render;
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        renderRevision++;
+        render = false;
+        if (disposed) return;
+        if (firstRender)
+        {
+            module = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/ChannelWave.UI/track-viewport.js");
+            if (disposed) { await module.DisposeAsync(); module = null; return; }
+            reference = DotNetObjectReference.Create(this);
+            await module.InvokeVoidAsync("watchViewport", element, reference);
+        }
+        if (module is null || disposed) return;
+        if (configure)
+        {
+            configure = false;
+            var keys = ReferenceEquals(sentItems, Items) ? null : Items.Select(t => $"{t.Origin.AccountId}:{t.Id}").ToArray();
+            sentItems = Items;
+            await module.InvokeVoidAsync("configureViewport", element, keys, generation, Enabled, CanLoadMore, Loading, HasError);
+        }
+        else await module.InvokeVoidAsync("refreshViewport", element);
+    }
+    [JSInvokable]
+    public Task WindowChangedAsync(Block[] next, double remaining, long owner) => InvokeAsync(() =>
+    {
+        if (disposed || owner != generation) return;
+        blocks = next; tail = remaining; windowRevision++; render = true; StateHasChanged();
+    });
+    [JSInvokable]
+    public Task LoadMoreAsync(long owner) => InvokeAsync(async () =>
+    {
+        if (!disposed && owner == generation && Enabled && CanLoadMore && !Loading && !HasError) await OnLoadMore.InvokeAsync();
+    });
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true;
+        if (module is not null)
+        {
+            try { await module.InvokeVoidAsync("unwatchViewport", element); await module.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+        }
+        reference?.Dispose();
+    }
+}

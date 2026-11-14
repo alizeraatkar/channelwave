@@ -1,0 +1,13 @@
+@using ChannelWave.Telegram
+@implements IDisposable
+@inject TelegramSession Session
+
+<div class="sidebar-bottom"><span class='connection-dot @(Session.AccountId is not null ? "connected" : "")'></span>@Label</div>
+
+@code {
+    private string Label => Session.ConnectionLabel ?? (Session.AccountId is null ? "Telegram not connected" : "Connected to Telegram");
+    private bool disposed;
+    protected override void OnInitialized() => Session.Changed += Changed;
+    private void Changed() { if (!disposed) _ = InvokeAsync(() => { if (!disposed) StateHasChanged(); }); }
+    public void Dispose() { disposed = true; Session.Changed -= Changed; }
+}

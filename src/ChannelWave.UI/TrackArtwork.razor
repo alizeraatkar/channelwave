@@ -1,0 +1,98 @@
+@using ChannelWave.Core
+@using ChannelWave.Telegram
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject ArtworkCoordinator Artwork
+@inject MetadataScanner Scanner
+@inject IJSRuntime JS
+
+<div class="music-art @(channelPhoto ? "music-art-channel" : "") @(IsLoading ? "music-art-loading" : "")" aria-busy="@(IsLoading ? "true" : "false")" @ref="element" title="@(channelPhoto ? "Source photo" : null)">
+    @if (uri is { } imageUri && !failed)
+    {
+        <img @key="imageUri" src="@imageUri" decoding="async" class="@(decoding ? "artwork-decoding" : null)" alt="@(channelPhoto ? $"Source photo for {Track.Origin.SourceName}" : $"Cover artwork for {Track.Title}")" @onload="() => ImageLoaded(imageUri)" @onerror="() => ImageFailed(imageUri)" />
+    }
+    @if (uri is null || failed || decoding) { <span class="artwork-fallback" aria-hidden="true"><MusicIcon /></span> }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public Track Track { get; set; } = null!;
+    [Parameter] public bool Offline { get; set; }
+    [Parameter] public bool AllowNetwork { get; set; }
+    [Parameter] public bool Ready { get; set; }
+    [Parameter] public bool ColorPlayerBackground { get; set; }
+    private ElementReference element;
+    private IJSObjectReference? module;
+    private DotNetObjectReference<TrackArtwork>? reference;
+    private CancellationTokenSource lifetime = new();
+    private string? uri, identity;
+    private bool visible, previousReady, failed, channelPhoto, disposed;
+    private bool resolving, decoding;
+    private long artworkRequest;
+    private bool IsLoading => visible && !failed && (decoding || resolving && uri is null);
+    protected override void OnInitialized() => Artwork.Changed += Updated;
+    protected override void OnParametersSet()
+    {
+        var key = $"{Track.Origin.AccountId}:{Track.Id}:{Metadata.MediaKey(Track)}:{Track.Origin.Protected}:{Offline}:{AllowNetwork}";
+        if (key != identity)
+        {
+            identity = key; ++artworkRequest; resolving = false; lifetime.Cancel(); lifetime.Dispose(); lifetime = new(); failed = false; Apply(Artwork.Cached(Track));
+            if (visible) _ = LoadAsync(false);
+        }
+        if (Ready && !previousReady) _ = LoadAsync(true);
+        previousReady = Ready;
+        // A refreshed repository row can gain persisted artwork without changing
+        // its media identity, for example while reconnecting after a reload.
+        Apply(Artwork.Cached(Track));
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        module = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/ChannelWave.UI/artwork.js");
+        if (disposed) { await module.DisposeAsync(); module = null; return; }
+        reference = DotNetObjectReference.Create(this); await module.InvokeVoidAsync("watchArtwork", element, reference, ColorPlayerBackground);
+    }
+    [JSInvokable] public Task VisibleAsync() { visible = true; return InvokeAsync(() => LoadAsync(false)); }
+    private async Task LoadAsync(bool refresh)
+    {
+        if (disposed || !visible) return;
+        var key = identity; var ct = lifetime.Token; var owner = ++artworkRequest;
+        resolving = true;
+        await InvokeAsync(StateHasChanged);
+        try
+        {
+            var image = await Artwork.GetAsync(Track, Offline, AllowNetwork, refresh,
+                Scanner.CanLoadAutomatically(Track.Origin.AccountId), ct);
+            if (!disposed && key == identity && owner == artworkRequest && !ct.IsCancellationRequested) Apply(image);
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            if (!disposed && owner == artworkRequest)
+            {
+                resolving = false;
+                await InvokeAsync(StateHasChanged);
+            }
+        }
+    }
+    private void Apply(ArtworkData? image)
+    {
+        string? next;
+        try { next = image?.DataUri; }
+        catch (ArgumentException) { next = null; }
+        if (next != uri) { uri = next; decoding = next is not null; failed = false; }
+        channelPhoto = image?.Kind == ArtworkKind.ChannelPhoto;
+    }
+    private void Updated(long account, Guid id)
+    {
+        if (!disposed && (id == Guid.Empty || Track.Origin.AccountId == account && Track.Id == id))
+            _ = InvokeAsync(() => { if (!disposed) { failed = false; Apply(Artwork.Cached(Track)); StateHasChanged(); } });
+    }
+    private void ImageLoaded(string image) { if (image == uri) decoding = false; }
+    private void ImageFailed(string image) { if (image == uri) { failed = true; decoding = false; } }
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true; Artwork.Changed -= Updated; lifetime.Cancel();
+        if (module is not null) { await module.InvokeVoidAsync("unwatchArtwork", element); await module.DisposeAsync(); }
+        reference?.Dispose(); lifetime.Dispose();
+    }
+}

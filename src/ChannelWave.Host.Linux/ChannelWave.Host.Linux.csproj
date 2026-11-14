@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.Razor">
+<ItemGroup><Content Include="../ChannelWave.Host.Web/wwwroot/icon-192.png" Link="wwwroot/icon-192.png" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" /></ItemGroup>
+<PropertyGroup><OutputType>Exe</OutputType></PropertyGroup><ItemGroup><Content Update="wwwroot/**" CopyToOutputDirectory="PreserveNewest" /></ItemGroup>
+<PropertyGroup Condition="'$(ChannelWaveRelease)' == 'true'"><RuntimeIdentifier>$(ChannelWaveReleaseRid)</RuntimeIdentifier><NuGetLockFilePath>packages.linux-x64.lock.json</NuGetLockFilePath></PropertyGroup>
+<ItemGroup Condition="'$(ChannelWaveTdlibLinuxRoot)' != ''">
+  <Content Include="$(ChannelWaveTdlibLinuxRoot)/lib/libtdjson.so*" Link="%(Filename)%(Extension)" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+</ItemGroup>
+<Target Name="RequireNativeReleaseDependencies" BeforeTargets="Publish">
+  <Error Condition="!Exists('$(ChannelWaveTdlibLinuxRoot)/lib/libtdjson.so')" Text="Set ChannelWaveTdlibLinuxRoot to the verified pinned Linux TDLib directory." />
+</Target>
+<ItemGroup>
+<ProjectReference Include="../ChannelWave.UI/ChannelWave.UI.csproj" />
+<ProjectReference Include="../ChannelWave.Telegram.Native/ChannelWave.Telegram.Native.csproj" />
+<ProjectReference Include="../ChannelWave.Storage.Sqlite/ChannelWave.Storage.Sqlite.csproj" />
+<PackageReference Include="Photino.Blazor" />
+</ItemGroup>
+</Project>

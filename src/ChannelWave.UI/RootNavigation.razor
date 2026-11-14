@@ -1,0 +1,16 @@
+<nav class="@(Mobile ? "mobile-nav" : "desktop-nav")" aria-label="@(Mobile ? "Mobile navigation" : "Main navigation")">
+    @foreach (var item in Items)
+    {
+        <button class="@(Active == item.Root ? "is-active" : "")" aria-current="@(Active == item.Root ? "page" : null)" @onclick="() => OnNavigate.InvokeAsync(item.Page)"><MusicIcon Name="@item.Icon" /><span>@item.Label</span></button>
+    }
+</nav>
+@code {
+    [Parameter] public bool Mobile { get; set; }
+    [Parameter] public RootSection Active { get; set; }
+    [Parameter] public EventCallback<string> OnNavigate { get; set; }
+    private static readonly (RootSection Root, string Page, string Label, string Icon)[] Items =
+    [
+        (RootSection.Home, "home", "Home", "home"), (RootSection.Library, "library", "Library", "library"),
+        (RootSection.Settings, "settings", "Settings", "settings"), (RootSection.Profile, "account", "Profile", "user")
+    ];
+}

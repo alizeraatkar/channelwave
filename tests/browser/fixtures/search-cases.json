@@ -1,0 +1,26 @@
+{
+  "tracks": [
+    { "number": 1, "title": "Night Drive", "artist": "Fixture artist", "source": "Café radio", "duration": 222, "publishedAt": "2026-01-01T00:00:00Z", "favorite": true },
+    { "number": 2, "title": "Night Walk", "artist": "Fixture artist", "source": "Evening", "duration": 248, "publishedAt": "2026-10-27T23:59:59Z" },
+    { "number": 3, "title": "Midnight Signal", "artist": "Sample artist", "source": "Fixture source", "duration": 196, "publishedAt": "2026-10-28T00:00:00Z" },
+    { "number": 4, "title": "Café Live", "artist": "Mahdí", "source": "Chill cafe", "duration": 330, "publishedAt": "2025-12-31T23:59:59Z" },
+    { "number": 5, "title": "شب آرام", "artist": "هنرمند", "source": "کافه", "duration": 180, "publishedAt": "2026-02-01T00:00:00Z" },
+    { "number": 6, "title": "Night", "artist": "Drive", "source": "Other", "duration": 5, "publishedAt": "2026-02-01T00:00:00Z" }
+  ],
+  "cases": [
+    { "name": "empty", "criteria": {}, "expected": [1, 2, 3, 4, 5, 6] },
+    { "name": "partial words", "criteria": { "text": "night" }, "expected": [1, 2, 3, 6] },
+    { "name": "reordered words across fields", "criteria": { "text": "drive night" }, "expected": [1, 6] },
+    { "name": "exact phrase within one field", "criteria": { "text": "\"night drive\"" }, "expected": [1] },
+    { "name": "unfinished quote", "criteria": { "text": "\"night drive" }, "expected": [1] },
+    { "name": "phrase and word", "criteria": { "text": "fixture \"night drive\"" }, "expected": [1] },
+    { "name": "accents", "criteria": { "text": "CAFE" }, "expected": [1, 4] },
+    { "name": "Arabic Persian forms", "criteria": { "text": "كافه" }, "expected": [5] },
+    { "name": "Persian marks", "criteria": { "text": "شب ارام" }, "expected": [5] },
+    { "name": "field filters", "criteria": { "title": "night", "artist": "fixture" }, "expected": [1, 2] },
+    { "name": "inclusive duration boundaries", "criteria": { "minDuration": 222, "maxDuration": 248 }, "expected": [1, 2] },
+    { "name": "publication day", "criteria": { "publishedFrom": "2026-10-27T00:00:00Z", "publishedBefore": "2026-10-28T00:00:00Z" }, "expected": [2] },
+    { "name": "combined filters", "criteria": { "text": "night", "artist": "fixture", "minDuration": 222, "maxDuration": 240, "publishedFrom": "2026-01-01T00:00:00Z" }, "expected": [1] },
+    { "name": "no fuzzy matching", "criteria": { "text": "nigth" }, "expected": [] }
+  ]
+}

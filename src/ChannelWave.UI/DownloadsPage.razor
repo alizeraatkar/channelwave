@@ -1,0 +1,83 @@
+@using ChannelWave.Core
+@implements IDisposable
+@inject TransferManager Transfers
+
+<section class="downloads-page media-page" aria-label="Downloads">
+    <header class="media-page-heading"><h1>Downloads</h1><p>Save music here. Keep listening anywhere.</p></header>
+    <div class="music-tabs" role="group" aria-label="Filter downloads">
+        @foreach (var name in new[] { "In progress", "Completed", "Needs attention" })
+        {
+            <button aria-pressed="@((filter == name).ToString().ToLowerInvariant())" @onclick="() => filter = name">@name <span class="music-tab-count">@Filtered(name).Count()</span></button>
+        }
+    </div>
+    <div class="downloads-toolbar"><span>@Transfers.Jobs.Count(j => !j.Finished && !j.NeedsAttention) unfinished</span>
+        @if (filter == "Completed") { <button class="subtle-button" disabled="@busy" @onclick="() => Run(() => Transfers.ClearCompletedAsync())">Clear completed</button> }
+        else { <button class="outline-button" disabled="@(!Transfers.Jobs.Any(j => !j.Finished))" @onclick="() => confirmCancel = true">Cancel all</button> }
+    </div>
+    @if (error is not null || Transfers.Error is not null) { <p class="music-error" role="alert">@(error ?? Transfers.Error)</p> }
+    @if (Transfers.Error is not null) { <button class="outline-button" disabled="@busy" @onclick="() => Run(() => Transfers.BindAsync(Transfers.Account))">Retry downloads</button> }
+    <div class="download-list">
+        @foreach (var job in Filtered(filter).Take(shown))
+        {
+            var progress = Transfers.Progress(job.Id);
+            <article class="download-row" @key="job.Id" aria-label="@($"Download {job.Track.Title}")">
+                <span class="music-art" aria-hidden="true"><MusicIcon /></span>
+                <div class="download-identity"><strong dir="auto">@job.Track.Title</strong><span><bdi dir="auto">@job.Track.Performer</bdi> · <bdi dir="auto">@job.Track.Origin.SourceName</bdi></span></div>
+                <div class="download-status"><span class="@(job.NeedsAttention ? "music-error" : "")">@Label(job, progress)</span>
+                    @if (job.State is TransferState.Downloading or TransferState.Saving)
+                    {
+                        @if (progress.Total > 0) { <progress aria-label="@($"Saving {job.Track.Title}")" max="@progress.Total" value="@progress.Bytes"></progress><small>@Size(progress.Bytes) of @Size(progress.Total)</small> }
+                        else { <progress aria-label="@($"Saving {job.Track.Title}")"></progress> }
+                    }
+                    @if (job.Error is not null) { <small>@job.Error @if (job.RetryAt is { } retry) { <span>Retry after @retry.ToLocalTime().ToString("HH:mm:ss")</span> }</small> }
+                    @if (job.Result is not null) { <small>@job.Result</small> }
+                </div>
+                <div class="download-actions">
+                    @if (job.State == TransferState.ReadyToExport) { <button class="primary-button" disabled="@busy" @onclick="() => Run(() => Transfers.ExportAsync(job.Id))">Save file</button> }
+                    @if (job.NeedsAttention) { <button class="subtle-button" @onclick="OnStorage">Manage storage</button><button class="outline-button" disabled="@busy" @onclick="() => Run(() => Transfers.RetryAsync(job.Id))">Retry</button> }
+                    @if (!job.Finished) { <button class="outline-button" aria-label="@($"Cancel {job.Track.Title}")" @onclick="() => Run(() => Transfers.CancelAsync(job.Id))">Cancel</button> }
+                </div>
+            </article>
+        }
+    </div>
+    @if (!Filtered(filter).Any()) { <div class="media-empty"><MusicIcon Name="download" /><h2>@(filter == "Needs attention" ? "No downloads need attention" : filter == "Completed" ? "No completed downloads yet" : "Nothing saving right now")</h2><p>Choose Save offline or Download a separate file from a song’s menu.</p></div> }
+    @if (Filtered(filter).Count() > shown) { <button class="outline-button" @onclick="() => shown += 50">Show more downloads</button> }
+    <p class="media-note">Unfinished offline saves resume when you reopen and reconnect. Exported copies always wait for you to choose Save file.</p>
+</section>
+<LibraryDialog Title="Cancel all downloads?" Open="confirmCancel" OnClose="() => confirmCancel = false">
+    <p>Cancel unfinished downloads and offline saves? Songs already saved on this device are kept.</p>
+    <button class="outline-button" @onclick="() => confirmCancel = false">Keep downloading</button>
+    <button class="primary-button" @onclick="CancelAll">Cancel all downloads</button>
+</LibraryDialog>
+
+@code {
+    [Parameter] public EventCallback OnStorage { get; set; }
+    private string filter = "In progress";
+    private string? error;
+    private bool busy, confirmCancel;
+    private int shown = 50;
+    private IEnumerable<TransferJob> Filtered(string value) => Transfers.Jobs.Where(j => value switch
+    {
+        "Completed" => j.Finished,
+        "Needs attention" => j.NeedsAttention,
+        _ => !j.Finished && !j.NeedsAttention
+    });
+    private static string Label(TransferJob job, TransferProgress progress) => job.State switch
+    {
+        TransferState.Downloading => progress.Phase ?? (job.Purpose == TransferPurpose.Offline ? "Saving offline" : "Downloading for export"),
+        TransferState.Saving => "Saving offline",
+        TransferState.Waiting => "Waiting",
+        TransferState.ReadyToExport => "Ready to export · Choose where to save this copy",
+        TransferState.Exporting => "Opening save destination…",
+        TransferState.Completed => job.Purpose == TransferPurpose.Offline ? "Saved offline" : "Sent to your device",
+        TransferState.Canceled => "Canceled",
+        TransferState.Failed => "Could not save",
+        _ => job.Purpose == TransferPurpose.Offline ? "Queued · Offline save" : "Queued · Export"
+    };
+    private static string Size(long bytes) => bytes >= 1_000_000_000 ? $"{bytes / 1_000_000_000d:0.##} GB" : $"{bytes / 1_000_000d:0.##} MB";
+    protected override void OnInitialized() => Transfers.Changed += Changed;
+    private void Changed() => _ = InvokeAsync(StateHasChanged);
+    private async Task Run(Func<Task> action) { busy = true; error = null; try { await action(); } catch (Exception e) { error = e.Message.Split('\n')[0]; } finally { busy = false; } }
+    private async Task CancelAll() { confirmCancel = false; await Run(() => Transfers.CancelAllAsync()); }
+    public void Dispose() => Transfers.Changed -= Changed;
+}

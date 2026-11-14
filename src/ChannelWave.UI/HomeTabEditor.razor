@@ -1,0 +1,43 @@
+@using ChannelWave.Core
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject IJSRuntime JS
+<section class="home-tab-editor" @ref="element">
+    <header class="collection-heading"><h1>Edit tabs</h1><button class="subtle-button" @onclick="OnDone">Done</button></header>
+    <p class="muted">Drag to change the order</p>
+    @foreach (var tab in Store.Value.Tabs)
+    {
+        var index = Array.IndexOf(Store.Value.Tabs, tab);
+        <div class="tab-editor-row" data-tab-id="@tab.Id" @key="tab.Id">
+            @if (!tab.IsDefault) { <button class="icon-button remove-tab" aria-label="@($"Remove {tab.Label} tab")" @onclick="() => Remove(tab)"><MusicIcon Name="close" /></button> }
+            <span class="tab-editor-label" dir="auto"><strong>@tab.Label</strong>@if (tab.Item is not null) { <small>@tab.Item.Kind</small> }</span>
+            <button class="icon-button" aria-label="@($"Move {tab.Label} up")" disabled="@(index == 0)" @onclick="() => Move(tab.Id, index - 1)"><MusicIcon Name="up" /></button>
+            <button class="icon-button" aria-label="@($"Move {tab.Label} down")" disabled="@(index == Store.Value.Tabs.Length - 1)" @onclick="() => Move(tab.Id, index + 1)"><MusicIcon Name="down" /></button>
+            <span class="tab-drag-handle" aria-hidden="true"><MusicIcon Name="grip" /></span>
+        </div>
+    }
+    @if (error is not null) { <p class="music-error" role="alert">@error</p> }
+    <button class="primary-button add-home-tab" @onclick="() => picker = true"><MusicIcon Name="plus" />Add from Library</button>
+    <p class="muted">Artist, album, playlist, track, saved filter or source</p>
+    <LibraryItemPicker Open="picker" Playlists="Playlists" OnClose="() => picker = false" />
+</section>
+@code {
+    [CascadingParameter] public LibraryPresentationStore Store { get; set; } = null!;
+    [Parameter] public IReadOnlyList<Playlist> Playlists { get; set; } = [];
+    [Parameter] public EventCallback OnDone { get; set; }
+    private bool picker;
+    private string? error;
+    private ElementReference element;
+    private IJSObjectReference? module;
+    private DotNetObjectReference<HomeTabEditor>? reference;
+    protected override async Task OnAfterRenderAsync(bool first)
+    {
+        if (!first) return;
+        module = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/ChannelWave.UI/presentation.js");
+        reference = DotNetObjectReference.Create(this);
+        await module.InvokeVoidAsync("watchTabDrag", element, reference);
+    }
+    [JSInvokable] public async Task Move(string id, int index) { try { await Store.MoveTabAsync(id, index); } catch (Exception e) { error = e.Message; } await InvokeAsync(StateHasChanged); }
+    private async Task Remove(HomeTab tab) { try { await Store.RemoveTabAsync(tab.Id); } catch (Exception e) { error = e.Message; } }
+    public async ValueTask DisposeAsync() { if (module is not null) { await module.InvokeVoidAsync("stopTabDrag", element); await module.DisposeAsync(); } reference?.Dispose(); }
+}

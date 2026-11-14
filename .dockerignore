@@ -1,0 +1,11 @@
+*
+!scripts/
+!scripts/*.Dockerfile
+!scripts/tdweb-patch.cjs
+!vendor/
+!vendor/tdweb-build/
+!vendor/tdweb-build/package.json
+!vendor/tdweb-build/package-lock.json
+!vendor/tdweb-build/build.mjs
+vendor/tdweb-build/node_modules/
+vendor/tdweb-build/dist/

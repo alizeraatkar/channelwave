@@ -1,0 +1,12 @@
+@implements IDisposable
+@inject ChannelWave.Core.PlaybackCoordinator Playback
+@if (Playback.PersistenceError is { } error)
+{
+    <div class="listening-persistence-error" role="alert"><span>@error @if (Playback.LastSavedAt is { } saved) { <small>Last saved @saved.ToLocalTime().ToString("T").</small> }</span><ListeningIconButton Icon="retry" Label="Retry saving player and listening data" OnClick="Playback.RetryPersistenceAsync" /></div>
+}
+else if (Playback.RecoveryNotice is { } notice) { <p class="listening-caption" role="status">@notice</p> }
+@code {
+    protected override void OnInitialized() => Playback.PersistenceChanged += Changed;
+    private void Changed() => _ = InvokeAsync(StateHasChanged);
+    public void Dispose() => Playback.PersistenceChanged -= Changed;
+}

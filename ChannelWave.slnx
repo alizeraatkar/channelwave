@@ -1,0 +1,12 @@
+<Solution>
+<Project Path="src/ChannelWave.Core/ChannelWave.Core.csproj" />
+<Project Path="src/ChannelWave.Telegram/ChannelWave.Telegram.csproj" />
+<Project Path="src/ChannelWave.Telegram.Native/ChannelWave.Telegram.Native.csproj" />
+<Project Path="src/ChannelWave.Storage.Sqlite/ChannelWave.Storage.Sqlite.csproj" />
+<Project Path="src/ChannelWave.Platform.Browser/ChannelWave.Platform.Browser.csproj" />
+<Project Path="src/ChannelWave.UI/ChannelWave.UI.csproj" />
+<Project Path="src/ChannelWave.Host.Web/ChannelWave.Host.Web.csproj" />
+<Project Path="src/ChannelWave.Host.Linux/ChannelWave.Host.Linux.csproj" />
+<Project Path="tools/ChannelWave.Probe/ChannelWave.Probe.csproj" />
+<Project Path="tests/ChannelWave.Core.Tests/ChannelWave.Core.Tests.csproj" />
+</Solution>

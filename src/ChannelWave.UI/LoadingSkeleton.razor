@@ -1,0 +1,15 @@
+<div class="loading-skeleton @(Sources ? "loading-skeleton-sources" : "loading-skeleton-tracks")" aria-hidden="true">
+    @for (var i = 0; i < (Count ?? (Sources ? 3 : 6)); i++)
+    {
+        <div class="skeleton-row">
+            <div class="skeleton-identity"><span class="skeleton-block skeleton-art"></span><span class="skeleton-copy"><span class="skeleton-block skeleton-title"></span><span class="skeleton-block skeleton-subtitle"></span></span></div>
+            @if (!Sources) { <span class="skeleton-block skeleton-source"></span><span class="skeleton-block skeleton-duration"></span> }
+            <span class="skeleton-block skeleton-action"></span>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter] public bool Sources { get; set; }
+    [Parameter] public int? Count { get; set; }
+}

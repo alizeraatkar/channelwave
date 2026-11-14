@@ -1,0 +1,318 @@
+@using ChannelWave.Core
+@using ChannelWave.Telegram
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.JSInterop
+@implements IAsyncDisposable
+@inject ILibraryRepository Library
+@inject TelegramSession Session
+@inject IRuntimeHost Host
+@inject PlaybackCoordinator Playback
+@inject MetadataScanner Scanner
+@inject IJSRuntime JS
+
+<dialog @ref="dialog" class="metadata-editor" aria-labelledby="metadata-heading">
+    <header><h2 id="metadata-heading">Edit details</h2><button type="button" @onclick="CloseAsync" aria-label="Close details">Close</button></header>
+    <div class="metadata-track-summary"><TrackArtwork Track="Track" Offline="OfflineAvailable" AllowNetwork="false" /><div><strong dir="auto">@Track.Title</strong><MusicCreditLink Track="Track" BeforeNavigate="CloseAsync" /><MusicCreditLink Track="Track" Kind="albums" BeforeNavigate="CloseAsync" /></div></div>
+    <TelegramTrackDetails Track="Track" OnMetadataSaved="MessageInfoSavedAsync" />
+    <section aria-labelledby="local-labels-heading" aria-busy="@(working ? "true" : "false")">
+        <h3 id="local-labels-heading">Local library labels</h3>
+        <p>These labels stay on this device. Saving them does not change the MP3 or Telegram message.</p>
+        <fieldset disabled="@working">
+            <label for="local-title">Local title</label><input id="local-title" dir="auto" maxlength="1000" @bind="localTitle" @bind:event="oninput" />
+            <label for="local-artist">Local artist</label><input id="local-artist" dir="auto" maxlength="1000" @bind="localArtist" @bind:event="oninput" />
+            <div class="metadata-actions"><button type="button" @onclick="() => SaveLocalAsync(false)">Save local corrections</button><button type="button" @onclick="() => SaveLocalAsync(true)">Restore automatic labels</button></div>
+        </fieldset>
+    </section>
+    @if (CachedMetadata.FromTrack(Track)?.Fields is { } cached)
+    {
+        <section aria-label="Automatically loaded metadata">
+            <h3>Automatic file details</h3>
+            <dl><dt>Title</dt><dd dir="auto">@cached.Title</dd><dt>Artist</dt><dd dir="auto">@if (Metadata.Normalize(cached.Artist) == Metadata.Normalize(Track.Performer)) { <MusicCreditLink Track="Track" BeforeNavigate="CloseAsync" /> } else { @cached.Artist }</dd>
+                <dt>Album</dt><dd dir="auto">@cached.Album</dd><dt>Year</dt><dd>@cached.Year</dd>
+                <dt>Genre</dt><dd dir="auto">@cached.Genre</dd><dt>Track</dt><dd>@cached.Track</dd><dt>Disc</dt><dd>@cached.Disc</dd></dl>
+        </section>
+    }
+    <section aria-labelledby="file-tags-heading" aria-busy="@(working ? "true" : "false")">
+        <h3 id="file-tags-heading">MP3 file tags</h3>
+        <p>@(OfflineAvailable ? "Export uses the saved offline copy." : "Reading the original tags or exporting a separate copy downloads the track if needed.")</p>
+        @if (Track.Origin.Protected) { <p class="music-error">This source restricts saving. Reading and exporting file tags are unavailable.</p> }
+        <button type="button" disabled="@(working || Track.Origin.Protected || !OfflineAvailable && Session.AccountId is null)" @onclick="ReadTagsAsync">Read tags</button>
+        @if (document is not null || HasEditableCache)
+        {
+            <p class="metadata-format">@(document?.Format ?? "Saved tag details")</p>
+            @if (document?.ReadOnlyReason is { } reason) { <p role="status">@reason</p> }
+            <fieldset disabled="@(working || document?.ReadOnlyReason is not null || Track.Origin.Protected || !OfflineAvailable && Session.AccountId is null)">
+                <div class="metadata-fields">
+                    <label>Title<input dir="auto" @bind="draft.Title" /></label>
+                    <label>Artist<input dir="auto" @bind="draft.Artist" /></label>
+                    <label>Album<input dir="auto" @bind="draft.Album" /></label>
+                    <label>Year<input inputmode="numeric" @bind="draft.Year" /></label>
+                    <label>Genre<input dir="auto" @bind="draft.Genre" /></label>
+                    <label>Track number / total<input placeholder="1/12" @bind="draft.Track" /></label>
+                    <label>Disc number / total<input placeholder="1/2" @bind="draft.Disc" /></label>
+                </div>
+                @if (document is not null)
+                {
+                    <div class="metadata-artwork">
+                        <label for="tag-artwork">Artwork</label>
+                        @if (document.Artwork.Count > 0)
+                        {
+                            <select id="tag-artwork" @bind="artworkIndex" @bind:after="ArtworkSelected">
+                                @foreach (var picture in document.Artwork) { <option value="@picture.FrameIndex">@(picture.PictureType == 3 ? "Front cover" : "Picture " + picture.PictureType) · @picture.Description</option> }
+                                <option value="-1">Add front cover</option>
+                            </select>
+                        }
+                        @if (preview is not null) { <img src="@preview" alt="Embedded artwork preview" /> }
+                        else { <p>@(changeArtwork ? "Artwork will be removed from the exported copy." : "No JPEG or PNG artwork selected.")</p> }
+                        <label class="metadata-upload">Replace with JPEG or PNG (up to 10 MiB)<InputFile OnChange="ChooseArtworkAsync" accept="image/jpeg,image/png" /></label>
+                        <button type="button" @onclick="RemoveArtwork" disabled="@(artworkIndex == -1 && replacementArtwork is null)">Remove selected artwork</button>
+                    </div>
+                }
+                <button type="button" @onclick="ExportAsync">Export tagged copy</button>
+            </fieldset>
+        }
+    </section>
+    @if (working)
+    {
+        <div class="metadata-progress"><span role="status"><LoadingIndicator Decorative="true" /> @operation @(total > 0 ? $"{bytes / 1024} of {total / 1024} KiB" : "")</span><button type="button" @onclick="CancelOperationAsync">Cancel operation</button>
+            @if (total > 0) { <progress aria-label="Operation progress" max="@total" value="@bytes"></progress> }
+            else { <progress aria-label="Operation progress"></progress> }
+        </div>
+    }
+    @if (message is not null) { <p role="status" class="music-feedback">@message</p> }
+    @if (error is not null) { <p role="alert" class="music-error">@error</p> }
+</dialog>
+
+@code {
+    [Parameter, EditorRequired] public Track Track { get; set; } = null!;
+    [Parameter] public bool OfflineAvailable { get; set; }
+    [Parameter] public EventCallback OnClose { get; set; }
+    [Parameter] public EventCallback<Track> OnMetadataSaved { get; set; }
+    private ElementReference dialog;
+    private IJSObjectReference? module;
+    private DotNetObjectReference<MetadataEditor>? reference;
+    private readonly CancellationTokenSource lifetime = new();
+    private CancellationTokenSource? operationCancellation;
+    private TelegramDownloads downloads = null!;
+    private ITagFile? file;
+    private Id3Document? document;
+    private Id3Fields draft = new();
+    private Id3Fields baseline = new();
+    private string localTitle = "", localArtist = "", operation = "";
+    private string originalLocalTitle = "", originalLocalArtist = "";
+    private string? error, message, preview;
+    private long? initialAccount;
+    private long bytes, total;
+    private bool working, closed, disposed, changeArtwork;
+    private int artworkIndex = -1;
+    private byte[]? replacementArtwork;
+    private Track openedTrack = null!;
+    private bool HasEditableCache => CachedMetadata.FromTrack(Track)?.Scan.Status is MetadataScanStatus.Completed or MetadataScanStatus.NoTags
+        && (Track.Media.FileName.EndsWith(".mp3", StringComparison.OrdinalIgnoreCase) || Track.Media.MimeType == "audio/mpeg");
+
+    protected override void OnInitialized()
+    {
+        initialAccount = Session.AccountId;
+        UpdateLocalLabels(Track);
+        downloads = new(Session); downloads.Progress += Progress; Session.Changed += SessionChanged;
+        openedTrack = Track;
+    }
+    protected override void OnParametersSet()
+    {
+        UpdateLocalLabels(Track);
+        if (!working && document is null && HasEditableCache)
+            UpdateDraft(Fields(Track.EmbeddedMetadata));
+    }
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+        module = await JS.InvokeAsync<IJSObjectReference>("import", "./_content/ChannelWave.UI/navigation.js");
+        if (closed || disposed) { await module.DisposeAsync(); module = null; return; }
+        reference = DotNetObjectReference.Create(this); await module.InvokeVoidAsync("openTagDialog", dialog, reference);
+        await LoadCachedAsync();
+    }
+    private async Task LoadCachedAsync()
+    {
+        try
+        {
+            var requested = Track;
+            var current = await Library.TrackAsync(requested.Origin.AccountId, requested.Id, lifetime.Token);
+            if (current is null || !Metadata.IsSameMedia(requested, current)) return;
+            if (CachedMetadata.FromTrack(current) is null && Scanner.CanLoadAutomatically(current.Origin.AccountId))
+                current = await Scanner.EnsureAsync(current, lifetime.Token);
+            if (closed || working || current is null || !Metadata.IsSameMedia(Track, current)) return;
+            Track = current;
+            UpdateLocalLabels(current);
+            if (document is null && HasEditableCache) UpdateDraft(Fields(current.EmbeddedMetadata));
+            StateHasChanged();
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception e) { if (!closed && !working) { error = Td.SafeError(e); StateHasChanged(); } }
+    }
+    private void SessionChanged() { if (Session.AccountId != initialAccount && !disposed) _ = InvokeAsync(CloseAsync); }
+    private void Progress(long current, long expected) { if (!disposed && !closed) _ = InvokeAsync(() => { bytes = current; total = expected; StateHasChanged(); }); }
+    private void CheckAccount()
+    {
+        lifetime.Token.ThrowIfCancellationRequested();
+        if (Session.AccountId != initialAccount || Session.AccountId is { } account && account != Track.Origin.AccountId
+            || Session.AccountId is null && !OfflineAvailable) throw new InvalidOperationException("This editor belongs to another account or is no longer available.");
+    }
+    private async Task RunAsync(string status, Func<CancellationToken, Task> action)
+    {
+        if (working || closed) return;
+        working = true; operation = status; error = message = null; bytes = total = 0;
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token); operationCancellation = cancellation;
+        try { CheckAccount(); await action(cancellation.Token); }
+        catch (OperationCanceledException) when (cancellation.IsCancellationRequested) { if (!closed) message = "Operation canceled."; }
+        catch (Exception e) { if (!closed) error = Td.SafeError(e); }
+        finally { working = false; operationCancellation = null; }
+    }
+    private Task SaveLocalAsync(bool revert) => RunAsync("Saving local labels…", async ct =>
+    {
+        var updated = await Library.SetLocalMetadataAsync(Track.Origin.AccountId, Track.Id,
+            revert ? null : localTitle == originalLocalTitle ? Track.TitleOverride : localTitle,
+            revert ? null : localArtist == originalLocalArtist ? Track.PerformerOverride : localArtist, ct);
+        CheckAccount(); Track = updated;
+        localTitle = originalLocalTitle = updated.Title;
+        localArtist = originalLocalArtist = updated.Performer;
+        await Playback.UpdateTrackMetadataAsync(updated, ct); await OnMetadataSaved.InvokeAsync(updated);
+        message = revert ? "Restored automatic labels. MP3 tags were not changed." : "Local corrections saved. MP3 tags were not changed.";
+    });
+    private void UpdateLocalLabels(Track track)
+    {
+        if (localTitle == originalLocalTitle) localTitle = track.Title;
+        if (localArtist == originalLocalArtist) localArtist = track.Performer;
+        originalLocalTitle = track.Title;
+        originalLocalArtist = track.Performer;
+    }
+    private async Task MessageInfoSavedAsync(Track updated)
+    {
+        if (closed || disposed) return;
+        var refreshed = Track with { Origin = updated.Origin, PublishedAt = updated.PublishedAt };
+        Track = refreshed;
+        await Playback.UpdateTrackMetadataAsync(refreshed, lifetime.Token);
+        await OnMetadataSaved.InvokeAsync(refreshed);
+    }
+    private Task ReadTagsAsync() => RunAsync("Reading MP3 tags…", LoadDocumentAsync);
+
+    private async Task<Track> ReadCurrentTrackAsync(CancellationToken ct)
+    {
+        var current = await Library.TrackAsync(Track.Origin.AccountId, Track.Id, ct);
+        CheckAccount();
+        if (current is null || !Metadata.IsSameMedia(openedTrack, current))
+            throw new InvalidOperationException("The recording changed or was removed. Reopen details and try again.");
+        if (current.Origin.Protected) throw new InvalidOperationException("This source restricts saving.");
+        return current;
+    }
+
+    private async Task LoadDocumentAsync(CancellationToken ct)
+    {
+        var requested = await ReadCurrentTrackAsync(ct);
+        Id3Document? read = null;
+        var updated = await Scanner.InspectAsync(requested, async token =>
+        {
+            using var foreground = await Session.MediaWork.ForegroundAsync(token);
+            await ReleaseFileAsync();
+            document = null; preview = null;
+            var current = await ReadCurrentTrackAsync(token);
+            var completed = OfflineAvailable ? (System.Text.Json.JsonElement?)null : await downloads.CompleteAsync(current, token);
+            if (completed is { } remote) TelegramMetadataFile.ValidateMedia(current, remote);
+            CheckAccount();
+            var opened = await Host.OpenTagFileAsync(current, completed, token);
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                if (opened.AccountId != current.Origin.AccountId) throw new InvalidOperationException("Cross-account file access rejected.");
+                read = await Id3Codec.ReadAsync(opened, token);
+                token.ThrowIfCancellationRequested(); CheckAccount();
+                file = opened;
+                return read;
+            }
+            finally { if (file != opened) await opened.DisposeAsync(); }
+        }, ct);
+        ct.ThrowIfCancellationRequested(); CheckAccount();
+        if (updated is not null)
+        {
+            Track = updated;
+            UpdateLocalLabels(updated);
+            if (Session.AccountId is null) await OnMetadataSaved.InvokeAsync(updated);
+        }
+        if (read is null) return;
+        document = read; UpdateDraft(read.Fields); changeArtwork = false; replacementArtwork = null;
+        artworkIndex = read.Artwork.FirstOrDefault(x => x.PictureType == 3)?.FrameIndex ?? read.Artwork.FirstOrDefault()?.FrameIndex ?? -1;
+        UpdatePreview();
+    }
+
+    private static Id3Fields Fields(EmbeddedMetadata? fields) => fields is null ? new() : new()
+    {
+        Title = fields.Title, Artist = fields.Artist, Album = fields.Album, Year = fields.Year,
+        Genre = fields.Genre, Track = fields.Track, Disc = fields.Disc
+    };
+
+    private void UpdateDraft(Id3Fields original)
+    {
+        draft = new()
+        {
+            Title = draft.Title == baseline.Title ? original.Title : draft.Title,
+            Artist = draft.Artist == baseline.Artist ? original.Artist : draft.Artist,
+            Album = draft.Album == baseline.Album ? original.Album : draft.Album,
+            Year = draft.Year == baseline.Year ? original.Year : draft.Year,
+            Genre = draft.Genre == baseline.Genre ? original.Genre : draft.Genre,
+            Track = draft.Track == baseline.Track ? original.Track : draft.Track,
+            Disc = draft.Disc == baseline.Disc ? original.Disc : draft.Disc
+        };
+        baseline = original with { };
+    }
+    private Task ExportAsync() => RunAsync("Exporting tagged copy…", async ct =>
+    {
+        if (document is null || file is null) await LoadDocumentAsync(ct);
+        if (document is null || file is null) throw new InvalidOperationException("The original tags are unavailable.");
+        if (document.ReadOnlyReason is not null) return;
+        using var foreground = await Session.MediaWork.ForegroundAsync(ct);
+        var current = await ReadCurrentTrackAsync(ct);
+        if (!OfflineAvailable) TelegramMetadataFile.ValidateMedia(current, await downloads.ResolveAsync(current, ct));
+        CheckAccount(); ct.ThrowIfCancellationRequested();
+        var rewrite = Id3Codec.Rewrite(document, draft, changeArtwork, artworkIndex, replacementArtwork);
+        message = await file.ExportCopyAsync(rewrite, Path.GetFileNameWithoutExtension(Track.Media.FileName.Replace('\\', '/')) + "-tagged.mp3", ct);
+    });
+    private void ArtworkSelected() { changeArtwork = false; replacementArtwork = null; UpdatePreview(); }
+    private void RemoveArtwork() { changeArtwork = true; replacementArtwork = null; UpdatePreview(); }
+    private Task ChooseArtworkAsync(InputFileChangeEventArgs args) => RunAsync("Reading artwork…", async ct =>
+    {
+        await using var input = args.File.OpenReadStream(Id3Codec.MaxArtworkBytes, ct);
+        using var output = new MemoryStream(); await input.CopyToAsync(output, ct);
+        var data = output.ToArray(); Id3Codec.ArtworkMime(data); ct.ThrowIfCancellationRequested();
+        replacementArtwork = data; changeArtwork = true; UpdatePreview();
+    });
+    private void UpdatePreview()
+    {
+        preview = null;
+        var data = changeArtwork ? replacementArtwork : document?.Artwork.FirstOrDefault(x => x.FrameIndex == artworkIndex)?.Data;
+        if (data is null) return;
+        try { preview = $"data:{Id3Codec.ArtworkMime(data)};base64,{Convert.ToBase64String(data)}"; }
+        catch (ArgumentException) { /* Preserve unsupported embedded artwork without displaying it. */ }
+    }
+    private async Task ReleaseFileAsync() { if (file is not null) { var previous = file; file = null; await previous.DisposeAsync(); } }
+    private async Task CancelOperationAsync()
+    {
+        operationCancellation?.Cancel();
+        await ReleaseFileAsync(); document = null; preview = null;
+    }
+    [JSInvokable] public Task RequestCloseAsync() => InvokeAsync(CloseAsync);
+    public async Task CloseAsync()
+    {
+        if (closed) return; closed = true; lifetime.Cancel(); operationCancellation?.Cancel();
+        await ReleaseFileAsync();
+        if (module is not null) await module.InvokeVoidAsync("closeTagDialog", dialog);
+        await OnClose.InvokeAsync();
+    }
+    public async ValueTask DisposeAsync()
+    {
+        if (disposed) return; disposed = true; closed = true;
+        Session.Changed -= SessionChanged; downloads.Progress -= Progress;
+        lifetime.Cancel(); operationCancellation?.Cancel();
+        await ReleaseFileAsync();
+        if (module is not null) { await module.InvokeVoidAsync("closeTagDialog", dialog); await module.DisposeAsync(); }
+        reference?.Dispose(); lifetime.Dispose();
+    }
+}

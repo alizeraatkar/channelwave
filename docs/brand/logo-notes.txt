@@ -1,0 +1,12 @@
+ChannelWave logo
+
+Production master: src/ChannelWave.UI/wwwroot/brand/channelwave-mark.svg
+One continuous Bezier path, uniform 12-unit stroke, rounded ends, solid #1ed760.
+The 96-unit square viewBox includes clear space around the full stroke.
+
+App header: 38px desktop, 32px mobile. The browser favicon and offline shell use
+the same SVG master. Native MAUI icons use its foreground at 0.65 scale over
+#121212. Resources/Splash/splash.svg copies the master. Home record artwork uses
+the mark in monochrome through CSS.
+
+The web touch icon and Linux window icon are raster exports of the SVG.

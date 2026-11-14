@@ -1,0 +1,150 @@
+name: Native lockfile bootstrap
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: native-preflight-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  restore:
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, platform: windows, workload: maui-windows, tfm: net10.0-windows10.0.19041.0, rid: win-x64 }
+          - { os: ubuntu-24.04, platform: linux, workload: '', tfm: net10.0, rid: linux-x64 }
+          - { os: macos-26, platform: macos, workload: maui-maccatalyst, tfm: net10.0-maccatalyst, rid: maccatalyst-arm64 }
+          - { os: macos-26, platform: ios, workload: maui-ios, tfm: net10.0-ios, rid: ios-arm64 }
+    runs-on: ${{ matrix.os }}
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.tools/nuget-application
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { persist-credentials: false }
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with: { global-json-file: global.json }
+      - if: matrix.os == 'macos-26'
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+      - if: matrix.workload != ''
+        shell: pwsh
+        run: ./scripts/install-workloads.ps1 -Workloads '${{ matrix.workload }}'
+      - shell: pwsh
+        run: |
+          $project = if ('${{ matrix.platform }}' -eq 'linux') { 'src/ChannelWave.Host.Linux' } else { 'src/ChannelWave.Host.Maui' }
+          $extra = @()
+          if ('${{ matrix.platform }}' -ne 'linux') { $extra += '-p:ChannelWaveTarget=${{ matrix.tfm }}' }
+          if ('${{ matrix.platform }}' -eq 'windows') { $extra += '-p:WindowsAppSDKSelfContained=true' }
+          dotnet restore $project --force-evaluate -p:RestoreLockedMode=false -p:ChannelWaveRelease=true -p:ChannelWaveReleaseRid=${{ matrix.rid }} -p:SelfContained=true @extra
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: locks-${{ matrix.platform }}
+          path: src/**/packages.*.lock.json
+          if-no-files-found: error
+          retention-days: 7
+  native-preflight:
+    needs: restore
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, platform: windows, workload: maui-windows, tfm: net10.0-windows10.0.19041.0, rid: win-x64 }
+          - { os: ubuntu-24.04, platform: linux, workload: '', tfm: net10.0, rid: linux-x64 }
+          - { os: macos-26, platform: maccatalyst, workload: maui-maccatalyst, tfm: net10.0-maccatalyst, rid: maccatalyst-arm64 }
+          - { os: macos-26, platform: ios, workload: maui-ios, tfm: net10.0-ios, rid: ios-arm64 }
+    runs-on: ${{ matrix.os }}
+    env:
+      NUGET_PACKAGES: ${{ github.workspace }}/.tools/nuget-application
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with: { persist-credentials: false }
+      - uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with: { global-json-file: global.json }
+      - if: matrix.workload != ''
+        shell: pwsh
+        run: ./scripts/install-workloads.ps1 -Workloads '${{ matrix.workload }}'
+      - if: matrix.os == 'macos-26'
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.6.app/Contents/Developer
+          brew install gperf
+      - if: matrix.platform == 'windows'
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: vcpkg
+        with:
+          path: ~/AppData/Local/vcpkg/archives
+          key: vcpkg-windows-vs18-static-857036234d15fbed8f30fed66e898d7725446c0c-v1
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: native
+        with:
+          path: artifacts/tdlib/${{ matrix.platform }}
+          key: tdlib-${{ matrix.platform }}-v2-${{ hashFiles('vendor/tdlib.lock.json', '.github/release.json', 'scripts/build-tdlib-windows.ps1', 'scripts/build-tdlib-apple.sh', 'scripts/tdlib-linux.Dockerfile', 'scripts/verify-native.py') }}
+      - if: matrix.platform == 'linux' && steps.native.outputs.cache-hit != 'true'
+        run: docker build -f scripts/tdlib-linux.Dockerfile --target artifact --output type=local,dest=artifacts/tdlib/linux .
+      - if: matrix.platform == 'windows' && steps.native.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./scripts/build-tdlib-windows.ps1
+      - if: matrix.os == 'macos-26' && steps.native.outputs.cache-hit != 'true'
+        run: bash scripts/build-tdlib-apple.sh '${{ matrix.platform }}'
+      - if: always() && matrix.platform == 'windows' && steps.vcpkg.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ~/AppData/Local/vcpkg/archives
+          key: ${{ steps.vcpkg.outputs.cache-primary-key }}
+      - id: verify-native
+        run: python scripts/verify-native.py artifacts/tdlib/${{ matrix.platform }} ${{ matrix.platform }}
+      - if: steps.native.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: artifacts/tdlib/${{ matrix.platform }}
+          key: ${{ steps.native.outputs.cache-primary-key }}
+      - if: matrix.platform == 'windows'
+        run: dotnet run --project tools/ChannelWave.Probe -c Release -- artifacts/tdlib/windows/tdjson.dll
+      - if: matrix.platform == 'linux'
+        run: dotnet run --project tools/ChannelWave.Probe -c Release -- artifacts/tdlib/linux/lib/libtdjson.so
+      - if: matrix.workload != ''
+        shell: pwsh
+        run: |
+          $extra = @('-p:ChannelWaveRelease=true', '-p:SelfContained=true')
+          if ('${{ matrix.platform }}' -eq 'windows') { $extra += @('-p:WindowsAppSDKSelfContained=true', "-p:ChannelWaveTdlibWindowsRoot=$PWD/artifacts/tdlib/windows") }
+          else { $extra += @('-p:EnableCodeSigning=false', '-p:CodesignRequireProvisioningProfile=false', "-p:ChannelWaveTdlibAppleArchive=$PWD/artifacts/tdlib/${{ matrix.platform }}/libtdjson-combined.a") }
+          dotnet restore src/ChannelWave.Host.Maui --locked-mode -p:ChannelWaveTarget=${{ matrix.tfm }} -p:ChannelWaveReleaseRid=${{ matrix.rid }} @extra
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          dotnet build src/ChannelWave.Host.Maui -c Release -f '${{ matrix.tfm }}' --no-restore -p:ChannelWaveTarget=${{ matrix.tfm }} -p:ChannelWaveReleaseRid=${{ matrix.rid }} @extra
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always() && steps.verify-native.conclusion == 'success'
+        with:
+          name: preflight-native-${{ matrix.platform }}
+          path: artifacts/tdlib/${{ matrix.platform }}/
+          if-no-files-found: error
+          retention-days: 7
+      - if: matrix.platform == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libnotify4 libgtk-3-0t64 libwebkit2gtk-4.1-0 libvlc5 vlc-plugin-base libsecret-tools xvfb dbus-x11 gnome-keyring
+      - if: matrix.platform == 'windows' || matrix.platform == 'linux'
+        name: Prepare isolated synthetic package (never published)
+        shell: pwsh
+        run: |
+          @'
+          import json, os
+          from pathlib import Path
+          config=json.loads(Path('.github/release.json').read_text())
+          value={'version':'0.0.0-beta.1','baseVersion':'0.0.0','buildNumber':1,'commit':os.environ['GITHUB_SHA'],'platforms':config['platforms']}
+          Path('artifacts/reservation.json').write_text(json.dumps(value))
+          registration=json.dumps({'apiId':1,'apiHash':'0'*32})
+          Path('artifacts/telegram.json').write_text(registration)
+          if os.environ['RUNNER_OS']=='Windows':Path('src/ChannelWave.Host.Maui/Resources/Raw/telegram.json').write_text(registration)
+          '@ | python -
+      - if: matrix.platform == 'windows' || matrix.platform == 'linux'
+        name: Package/install/startup/audio preflight
+        shell: pwsh
+        run: |
+          ./scripts/package-desktop.ps1 -Platform '${{ matrix.platform }}' -Version '0.0.0-beta.1' -BuildNumber 1
+          ./scripts/smoke-desktop.ps1 -Platform '${{ matrix.platform }}'
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: native-smoke-${{ matrix.platform }}
+          path: artifacts/smoke-*.json
+          if-no-files-found: ignore
+          retention-days: 14

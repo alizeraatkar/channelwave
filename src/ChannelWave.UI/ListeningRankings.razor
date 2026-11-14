@@ -1,0 +1,46 @@
+@using ChannelWave.Core
+@inject ListeningPlaybackActions Actions
+<section class="listening-widget listening-rankings" aria-labelledby="rankings-title">
+    <header><h2 id="rankings-title">@(ranking == "tracks" ? "Top tracks" : ranking == "artists" ? "Top artist credits" : "Top sources")</h2><label class="music-sr-only" for="listening-ranking">Rankings</label><select id="listening-ranking" value="@ranking" @onchange="Ranking"><option value="tracks">Tracks</option><option value="artists">Artists</option><option value="sources">Sources</option></select></header>
+    @if (error is not null) { <p class="music-error" role="alert">@error</p> }
+    @if (feedback is not null) { <p role="status">@feedback</p> }
+    @if (Rows.Length == 0) { <p class="listening-caption">No qualified plays in this period.</p> }
+    <ol class="listening-rank-list">
+        @foreach (var row in Rows.Take(rankLimit))
+        {
+            <li><span class="listening-rank-number">@(Array.IndexOf(Rows, row) + 1)</span><div class="mini-cover"><MusicIcon /></div><div class="listening-identity"><strong dir="auto">@row.Label</strong><span dir="auto">@(ranking == "tracks" ? $"{row.Track.Artist} · {row.Track.Source}" : "As recorded in your listening history")</span></div><span>@row.Plays plays · @ListeningHistory.Time(row.Milliseconds)</span>
+                @if (ranking == "tracks")
+                {
+                    <ListeningIconButton Icon="play" Label="@($"Play {row.Label}")" OnClick="() => Act(() => Actions.PlayAsync(row.Track), false)" />
+                    <ListeningIconButton Icon="queue" Label="@($"Add {row.Label} to queue")" OnClick="() => Act(() => Actions.EnqueueAsync(row.Track, false), true)" />
+                }
+                else { <ListeningIconButton Icon="history" Label="@($"Open history for {row.Label}")" OnClick="() => Drilldown(row)" /> }
+            </li>
+        }
+    </ol>
+    @if (Rows.Length > rankLimit) { <button class="subtle-button" @onclick="() => rankLimit += 10">Show more ranked music</button> }
+    <p class="listening-caption">Artist credits follow available tags; unknown artists are excluded. Collaborations remain one supplied credit. Rankings count qualified plays; time includes partial listening.</p>
+</section>
+@code {
+    [Parameter] public ListeningStatistics? Data { get; set; }
+    [Parameter] public long FilterRevision { get; set; }
+    [Parameter] public EventCallback<KeyValuePair<string, string>> OnFilter { get; set; }
+    private string ranking = "tracks";
+    private int rankLimit = 3;
+    private long previousFilter = -1;
+    private string? error, feedback;
+    private ListeningRank[] Rows => Data is null ? [] : ranking == "artists" ? Data.TopArtists : ranking == "sources" ? Data.TopSources : Data.TopTracks;
+    protected override void OnParametersSet()
+    {
+        if (previousFilter == FilterRevision) return;
+        previousFilter = FilterRevision; rankLimit = 3; error = feedback = null;
+    }
+    private void Ranking(ChangeEventArgs e) { ranking = e.Value?.ToString() ?? "tracks"; rankLimit = 3; error = feedback = null; }
+    private Task Drilldown(ListeningRank row) => OnFilter.InvokeAsync(new(ranking, ranking == "artists" ? row.Label : row.Key));
+    private async Task Act(Func<Task> action, bool queue)
+    {
+        error = feedback = null;
+        try { await action(); feedback = queue ? "Added to queue." : "Playback started."; }
+        catch (Exception e) { error = e.Message; }
+    }
+}

@@ -1,0 +1,39 @@
+@using ChannelWave.Core
+@implements IDisposable
+@inject PlaybackCoordinator Playback
+
+<section class="listening-settings" aria-label="Listening and privacy">
+    <h2>Listening &amp; privacy</h2>
+    <label class="listening-switch"><span>History and statistics</span><input type="checkbox" role="switch" checked="@Playback.ListeningPreferences.Collect" @onchange="ToggleCollection" /></label>
+    <p>Saved only on this device. Pausing stops both history and statistics. Playback and your remembered player still work.</p>
+    <label class="listening-select">Keep listening records<select value="@Playback.ListeningPreferences.RetentionDays" @onchange="Retention"><option value="0">Until deleted</option><option value="90">90 days</option><option value="365">One year</option></select></label>
+    <p>Automatic retention keeps listens active within the selected period. Statistics include retained records only.</p>
+    <div class="listening-setting-action"><span>Clear history and statistics</span><ListeningIconButton Icon="trash" Label="Clear history and statistics" OnClick="() => confirm = true" /></div>
+    <label class="listening-switch"><span>Remember player after restart</span><input type="checkbox" role="switch" checked="@Playback.ListeningPreferences.RememberPlayer" @onchange="ToggleRemember" /></label>
+    <p>Restore your queue and position paused. Turning this off clears saved player state.</p>
+    @if (error is not null) { <p class="music-error" role="alert">@error</p> }
+</section>
+<LibraryDialog Open="confirm" Title="Clear listening history?" OnClose="() => confirm = false">
+    <p>This removes all listening records and their statistics for this account on this device. Your queue, playlists, favorites and saved music stay available.</p>
+    <div class="listening-dialog-actions"><ListeningIconButton Icon="close" Label="Cancel clearing history" OnClick="() => confirm = false" /><ListeningIconButton Icon="trash" Label="Confirm clear history and statistics" Class="listening-danger" OnClick="Clear" /></div>
+</LibraryDialog>
+@code {
+    private bool confirm;
+    private string? error;
+    protected override void OnInitialized() => Playback.PersistenceChanged += Changed;
+    private void Changed() => _ = InvokeAsync(StateHasChanged);
+    private Task ToggleCollection(ChangeEventArgs e) => Save(Playback.ListeningPreferences with { Collect = e.Value is true });
+    private Task ToggleRemember(ChangeEventArgs e) => Save(Playback.ListeningPreferences with { RememberPlayer = e.Value is true });
+    private Task Retention(ChangeEventArgs e) => Save(Playback.ListeningPreferences with { RetentionDays = int.Parse(e.Value?.ToString() ?? "0", System.Globalization.CultureInfo.InvariantCulture) });
+    private async Task Save(ListeningPreferences preferences)
+    {
+        try { await Playback.SetListeningPreferencesAsync(preferences); error = Playback.PersistenceError; }
+        catch (Exception e) { error = e.Message; }
+    }
+    private async Task Clear()
+    {
+        try { await Playback.DeleteListeningAsync(null); confirm = false; error = null; }
+        catch (Exception e) { error = "History could not be cleared. " + e.Message; }
+    }
+    public void Dispose() => Playback.PersistenceChanged -= Changed;
+}

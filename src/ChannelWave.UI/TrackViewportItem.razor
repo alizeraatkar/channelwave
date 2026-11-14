@@ -1,0 +1,22 @@
+@using ChannelWave.Core
+
+@RowTemplate(Track)
+
+@code {
+    [Parameter, EditorRequired] public Track Track { get; set; } = null!;
+    [Parameter] public object? Version { get; set; }
+    [Parameter] public string Context { get; set; } = "";
+    [Parameter, EditorRequired] public RenderFragment<Track> RowTemplate { get; set; } = null!;
+    private Track? previousTrack;
+    private object? previousVersion;
+    private string? previousContext;
+    private bool changed = true;
+    protected override void OnParametersSet()
+    {
+        // Blazor treats records and render fragments as mutable parameters. A
+        // moving viewport must not rerender every retained row and its artwork.
+        changed = !ReferenceEquals(previousTrack, Track) || !Equals(previousVersion, Version) || previousContext != Context;
+        previousTrack = Track; previousVersion = Version; previousContext = Context;
+    }
+    protected override bool ShouldRender() => changed;
+}

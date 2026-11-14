@@ -1,0 +1,6 @@
+# Keep the pinned TDLib sources and generated contract byte-identical on Windows.
+vendor/** text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.ps1 text eol=lf
+*.py text eol=lf

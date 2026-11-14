@@ -1,0 +1,9 @@
+@using ChannelWave.Core
+<div class="display-toggle" role="group" aria-label="Display options">
+    <button aria-label="Grid view" aria-pressed="@((Value == CollectionDisplay.Grid).ToString().ToLowerInvariant())" @onclick="() => ValueChanged.InvokeAsync(CollectionDisplay.Grid)"><MusicIcon Name="grid" /></button>
+    <button aria-label="List view" aria-pressed="@((Value == CollectionDisplay.List).ToString().ToLowerInvariant())" @onclick="() => ValueChanged.InvokeAsync(CollectionDisplay.List)"><MusicIcon Name="rows" /></button>
+</div>
+@code {
+    [Parameter] public CollectionDisplay Value { get; set; }
+    [Parameter] public EventCallback<CollectionDisplay> ValueChanged { get; set; }
+}
