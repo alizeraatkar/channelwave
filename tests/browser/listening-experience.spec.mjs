@@ -441,8 +441,16 @@ test('statistics and history failures retry independently and rapid shared chang
 for (const legacy of ['history', 'statistics']) {
     test(`legacy ${legacy} route reload and Back/Forward normalize without extra history entries`, async ({ page }) => {
         await seed(page);
-        await page.evaluate(legacy => { window.history.replaceState({ channelwave: { index: 0 } }, '', `/#view=${legacy}`); }, legacy);
-        await page.reload();
+        await page.addInitScript(() => { globalThis.initialListeningRoute = location.hash; });
+        await Promise.all([
+            page.waitForEvent('domcontentloaded'),
+            page.evaluate(legacy => {
+                window.history.replaceState({ channelwave: { index: 0 } }, '', `/#view=${legacy}`);
+                // Capture the reload URL before a pending render records the old page.
+                window.location.reload();
+            }, legacy)
+        ]);
+        expect(await page.evaluate(() => globalThis.initialListeningRoute)).toBe(`#view=${legacy}`);
         await expect(page.getByRole('heading', { name: 'Listening activity', exact: true })).toBeVisible();
         await expect(page).toHaveURL(/#view=activity$/);
         expect(await page.evaluate(() => window.history.state.channelwave.index)).toBe(0);

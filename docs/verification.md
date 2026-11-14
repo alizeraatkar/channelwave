@@ -23,6 +23,13 @@ Release MAUI build passed (two existing PRI249 resource warnings); all six WebKi
 UI checks, four Edge library-layout checks and 66 Python CI tests passed.
 Hosted cross-platform status is recorded by the repository's Actions run.
 
+The subsequent Chromium run reached the legacy listening-route reload tests and
+exposed a fixture race: a pending render could replace the synthetic alias URL
+between separate replaceState and reload commands. The fixture now initiates the
+reload in the same browser task and asserts the new document's initial alias.
+Existing canonical-route, history-index and Back/Forward assertions remain.
+Both aliases passed three local repetitions each after this correction.
+
 ## 2026-11-13: Android scrolling and navigation
 
 Environment: Android 16 x64 emulator (`emulator-5554`), WebView 133, .NET SDK
