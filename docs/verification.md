@@ -56,6 +56,16 @@ labels. Both ID3 versions passed three local repetitions each. The remaining
 Playwright test enumeration confirms that the four shards cover all 347 full-suite
 cases exactly once (89, 85, 88 and 85), with no missing or duplicate cases.
 
+The sharded run passed every native build, shared OS check, Edge shard, WebKit
+and both security jobs, and exposed two Linux Chromium layout issues. On phones
+up to 360 pixels wide, the status label now uses the brand column's full width.
+A conflicting hover rule also removed the title button's 44-pixel minimum height,
+causing a nine-pixel row-height oscillation during viewport measurements. The
+touch-target rule now applies during hover; the viewport algorithm is unchanged.
+The variable-row tests assert the 44-pixel target and unchanged row height after
+hover. Both viewport cases and the responsive header case passed in isolated
+Linux Chromium matching the pinned Playwright version.
+
 ## 2026-11-13: Android scrolling and navigation
 
 Environment: Android 16 x64 emulator (`emulator-5554`), WebView 133, .NET SDK

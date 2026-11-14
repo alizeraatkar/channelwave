@@ -113,6 +113,13 @@ for (const width of [390, 1440]) {
     test(`variable rows, selection, resize and dialog focus preserve browsing at ${width}px`, async ({ page }) => {
         await page.setViewportSize({ width, height: 900 });
         await seedPerformance(page, 350, { notices: true });
+        const firstRow = page.locator('.track').first();
+        const title = firstRow.locator('.music-title-link');
+        const rowHeight = (await firstRow.boundingBox()).height;
+        await title.hover();
+        await expect(title).toHaveCSS('min-height', '44px');
+        expect((await firstRow.boundingBox()).height).toBe(rowHeight);
+        await page.mouse.move(0, 0);
         await page.getByRole('button', { name: 'Select tracks', exact: true }).click();
         await page.getByRole('button', { name: 'Select shown tracks', exact: true }).click();
         await expect(page.getByText('100 selected', { exact: true })).toBeVisible();
