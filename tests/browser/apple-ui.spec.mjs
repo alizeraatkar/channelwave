@@ -35,10 +35,16 @@ for (const width of [320, 390, 820, 1440]) {
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
         if (width === 390) {
             const first = await page.locator('.track').first().boundingBox();
-            const second = await page.locator('.track').nth(1).boundingBox();
             const player = await page.locator('.idle-player').boundingBox();
-            expect(first.y).toBeLessThan(422);
+            expect(first.y + first.height).toBeLessThanOrEqual(player.y);
+            // The current collection toolbar needs scrolling to reach later rows.
+            // Verify the last row clears the player after scrolling the content pane.
+            await page.locator('.content').evaluate(element => { element.scrollTop = element.scrollHeight; });
+            await expect(page.locator('.track').nth(1)).toBeInViewport({ ratio: 1 });
+            const second = await page.locator('.track').nth(1).boundingBox();
             expect(second.y + second.height).toBeLessThanOrEqual(player.y);
+            await page.screenshot({ path: info.outputPath('library-scrolled.png') });
+            await page.locator('.content').evaluate(element => { element.scrollTop = 0; });
         }
         await page.screenshot({ path: info.outputPath('library-closed.png') });
         const trigger = page.getByLabel('Source', { exact: true });

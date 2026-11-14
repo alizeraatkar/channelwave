@@ -40,12 +40,16 @@ for (const width of [320, 390, 820, 1440]) {
         await page.setViewportSize({ width, height: 844 });
         await seed(page);
         const first = await page.locator('.track').first().boundingBox();
-        const last = await page.locator('.track').last().boundingBox();
         const idle = await page.locator('.idle-player').boundingBox();
         if (width === 390) {
-            expect(first.y).toBeLessThan(idle.y);
-            expect(last.y + last.height).toBeLessThan(idle.y);
+            expect(first.y + first.height).toBeLessThan(idle.y);
             expect(idle.height).toBe(56);
+            await page.locator('.content').evaluate(element => { element.scrollTop = element.scrollHeight; });
+            await expect(page.locator('.track').last()).toBeInViewport({ ratio: 1 });
+            const last = await page.locator('.track').last().boundingBox();
+            expect(last.y + last.height).toBeLessThan(idle.y);
+            await capture(page, `scrolled-${width}`);
+            await page.locator('.content').evaluate(element => { element.scrollTop = 0; });
         }
         expect(first.height).toBeLessThanOrEqual(120);
         for (const button of await page.locator('.track').first().getByRole('button').all()) {

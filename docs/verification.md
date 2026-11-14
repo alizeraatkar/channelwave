@@ -5,6 +5,24 @@ Telegram fixtures do not establish authenticated Telegram behavior. Native
 compilation, isolated container checks and package inspection do not establish
 physical-device acceptance. No target is release-validated.
 
+## 2026-11-14: initial GitHub Actions fixes
+
+The first public-repository run failed Windows MAUI restore because the SDK's
+implicit library-packs source supplied package variants with different hashes.
+`DisableImplicitLibraryPacksFolder` keeps application restores on configured
+feeds. Existing versions, lockfile hashes and signature checks are retained.
+An SDK-evaluation regression verifies exclusion and an explicit opt-in control.
+
+Apple WebKit and Chromium/Edge library tests also assumed the pre-redesign
+header and an entirely visible short list. They now verify the initial row's
+player clearance and the last row's full visibility after scrolling the content
+pane. Picker, focus, target-size and overflow assertions remain in place.
+
+Local validation before the fix push: clean-cache locked Windows restore and
+Release MAUI build passed (two existing PRI249 resource warnings); all six WebKit
+UI checks, four Edge library-layout checks and 66 Python CI tests passed.
+Hosted cross-platform status is recorded by the repository's Actions run.
+
 ## 2026-11-13: Android scrolling and navigation
 
 Environment: Android 16 x64 emulator (`emulator-5554`), WebView 133, .NET SDK

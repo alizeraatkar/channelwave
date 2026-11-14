@@ -5,6 +5,8 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>14</LangVersion>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+    <!-- Keep workload library-packs from overriding packages from the configured feeds. -->
+    <DisableImplicitLibraryPacksFolder>true</DisableImplicitLibraryPacksFolder>
     <Deterministic>true</Deterministic>
   </PropertyGroup>
 </Project>
