@@ -1,3 +1,4 @@
+import json
 import os
 from pathlib import Path
 import shutil
@@ -27,6 +28,7 @@ class DesktopPackagingTests(unittest.TestCase):
         self.wrapper.write_text(r"""
 function dotnet {
     if ($args[0] -eq 'publish') {
+        @($args) | ConvertTo-Json | Set-Content "$PSScriptRoot/sdk-publish-arguments.json"
         $index = [Array]::IndexOf($args, '-o')
         $output = $args[$index + 1]
         New-Item -ItemType Directory -Force $output | Out-Null
@@ -74,3 +76,12 @@ function python {
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('private-key', result.stdout + result.stderr)
         self.assertFalse(self.archive.exists())
+
+    def test_windows_prerelease_uses_numeric_package_metadata(self):
+        result = self.package()
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        arguments = json.loads((self.root / 'sdk-publish-arguments.json').read_text(encoding='utf-8-sig'))
+        self.assertIn('-p:ApplicationDisplayVersion=0.1.0', arguments)
+        self.assertIn('-p:ApplicationVersion=7', arguments)
+        self.assertIn('-p:InformationalVersion=0.1.0-beta.1', arguments)

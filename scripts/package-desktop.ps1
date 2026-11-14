@@ -11,7 +11,9 @@ $native = "$root/artifacts/tdlib/$Platform"
 python "$root/scripts/verify-native.py" $native $Platform
 $properties = @('-p:ChannelWaveRelease=true', "-p:ChannelWaveReleaseRid=$rid", '-p:SelfContained=true')
 if ($Platform -eq 'windows') {
-    $properties += @('-p:ChannelWaveTarget=net10.0-windows10.0.19041.0', '-p:WindowsAppSDKSelfContained=true', "-p:ChannelWaveTdlibWindowsRoot=$native", "-p:ApplicationVersion=$BuildNumber", "-p:ApplicationDisplayVersion=$Version")
+    # Windows package identity requires a numeric three-part display version.
+    $displayVersion = ($Version -split '-', 2)[0]
+    $properties += @('-p:ChannelWaveTarget=net10.0-windows10.0.19041.0', '-p:WindowsAppSDKSelfContained=true', "-p:ChannelWaveTdlibWindowsRoot=$native", "-p:ApplicationVersion=$BuildNumber", "-p:ApplicationDisplayVersion=$displayVersion", "-p:InformationalVersion=$Version")
 } else { $properties += "-p:ChannelWaveTdlibLinuxRoot=$native" }
 dotnet restore $project --locked-mode -p:Configuration=Release @properties
 $framework = if ($Platform -eq 'windows') { 'net10.0-windows10.0.19041.0' } else { 'net10.0' }
