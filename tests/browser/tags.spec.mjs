@@ -1,5 +1,6 @@
 import { test, expect } from '@playwright/test';
 import fs from 'node:fs/promises';
+import { installLoadingGates } from './fixtures/loading.mjs';
 import { savePreparedExport, installTelegramFixture, openLibrary, clickTrackAction, connectFixture, addFixtureSource } from './fixtures/telegram.mjs';
 
 const modulePath = '/_content/ChannelWave.Platform.Browser/channelwave.js';
@@ -20,9 +21,11 @@ async function editor(page) {
     await expect(dialog).toBeVisible(); return dialog;
 }
 async function read(page, dialog, complete = true) {
+    if (complete) await page.evaluate(() => { globalThis.completeFixtureDownload = null; });
     await dialog.getByRole('button', { name: 'Read tags', exact: true }).click();
     if (complete) {
         await expect(dialog.getByRole('button', { name: 'Cancel operation' })).toBeVisible();
+        await expect.poll(() => page.evaluate(() => typeof globalThis.completeFixtureDownload)).toBe('function');
         await page.evaluate(() => completeFixtureDownload());
     }
     await expect(dialog.getByRole('button', { name: 'Export tagged copy' })).toBeEnabled();
@@ -105,12 +108,22 @@ test('local corrections persist through reindexing and offline reload, independe
 });
 
 test('unsupported audio is read-only, cancellation closes safely, and protected tracks cannot read file tags', async ({ page }) => {
+    await installLoadingGates(page);
     await setup(page, 'normal'); let dialog = await editor(page);
     await dialog.getByRole('button', { name: 'Read tags', exact: true }).click();
     await dialog.getByRole('button', { name: 'Cancel operation' }).click();
     await expect(dialog.getByRole('status')).toContainText('Operation canceled');
+    // The cancel button renders before the replacement TDLib request is sent.
+    await page.evaluate(() => {
+        globalThis.completeFixtureDownload = null;
+        fixtureHoldOperation('telegram:downloadFile');
+    });
     await dialog.getByRole('button', { name: 'Read tags', exact: true }).click();
     await expect(dialog.getByRole('button', { name: 'Cancel operation' })).toBeVisible();
+    await expect.poll(() => page.evaluate(() => fixtureOperationPending('telegram:downloadFile'))).toBe(1);
+    expect(await page.evaluate(() => globalThis.completeFixtureDownload)).toBeNull();
+    await page.evaluate(() => fixtureReleaseOperation('telegram:downloadFile'));
+    await expect.poll(() => page.evaluate(() => typeof globalThis.completeFixtureDownload)).toBe('function');
     await page.evaluate(() => completeFixtureDownload());
     await expect(dialog.getByRole('status')).toContainText('MP3 files only');
     await expect(dialog.getByRole('button', { name: 'Export tagged copy' })).toBeDisabled();

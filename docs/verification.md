@@ -5,6 +5,16 @@ Telegram fixtures do not establish authenticated Telegram behavior. Native
 compilation, isolated container checks and package inspection do not establish
 physical-device acceptance. No target is release-validated.
 
+## 2026-11-15: canceled tag-read fixture
+
+The tag-read fixture waits for the replacement TDLib download callback after
+cancellation. Previously the rendered Cancel button could precede the new request,
+letting the test complete a stale callback and leave the current read pending.
+All nine tag-editing cases passed in Linux Chromium. The cancellation case also
+passed three repetitions with the new request explicitly gated until the old
+callback was cleared. Existing cancellation, read-only-format and protection
+assertions are retained; no retries or timeouts changed.
+
 ## 2026-11-14: first installer release test
 
 The clean-directory packaging test exposed a Windows artifact scan that ran before
@@ -13,9 +23,16 @@ native probe and archive creation. Integration tests execute the packaging scrip
 with synthetic publish output and the real artifact scanner: a first package is
 created successfully, and secret-bearing output is rejected before archiving.
 These tests verify packaging order and the security gate; native compilation and
-startup remain separate hosted release checks. All 68 Python CI tests pass locally.
+startup remain separate hosted release checks. All 69 Python CI tests pass locally.
 Run them with `python -m unittest discover -s tests/ci -v`; PowerShell 7 (`pwsh`)
 is required for the packaging cases.
+
+The first hosted beta completed Android and Linux packaging but exposed MAUI's
+numeric Windows version requirement. Windows now uses its numeric base version and
+global build number for package identity, retaining the beta in assembly
+informational metadata and archive names. A fresh MAUI Release rebuild generated
+identity `0.1.0.8` with beta.2 assembly metadata. Verified desktop native libraries
+are cached before application packaging so later failures retain the native build.
 
 ## 2026-11-14: initial GitHub Actions fixes
 
