@@ -37,10 +37,24 @@ viewport cases passed locally. Eight reconnect cases also passed after explicit
 startup readiness checks. Reload tests wait for the app shell before checking
 restored playlist state, preserving their existing state and navigation assertions.
 
-The full browser job budget is 60 minutes: the Edge job took about 37 minutes to
-reach 242 of 347 cases. Per-test deadlines, zero retries, assertions and required
-checks are unchanged. Native builds for all four platforms, the shared OS matrix,
+The Edge job took about 37 minutes to reach 242 of 347 cases. Chromium and Edge
+now each run four Playwright shards within the original 40-minute job budget;
+WebKit keeps its focused Apple UI suite. Evidence artifacts include the shard
+number to avoid collisions. Per-test deadlines, zero retries, assertions and
+required checks are unchanged. Native builds for all four platforms, the shared OS matrix,
 WebKit and both security jobs passed in the preceding hosted run.
+
+The ID3 round-trip fixture now supplies consistent replacement audio sizes to
+single-message reads, batch audits, source searches and completed-file reads.
+Previously, a background source audit could overwrite the replacement's indexed
+size with the original fixture size and correctly trigger the media-change guard.
+The tests check that export preserves source bytes and indexed labels before
+substituting the export for read-back; rereading that new source updates automatic
+labels. Both ID3 versions passed three local repetitions each. The remaining
+33 transfer, activity and responsive-layout cases passed locally.
+
+Playwright test enumeration confirms that the four shards cover all 347 full-suite
+cases exactly once (89, 85, 88 and 85), with no missing or duplicate cases.
 
 ## 2026-11-13: Android scrolling and navigation
 

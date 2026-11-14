@@ -242,12 +242,19 @@ async function supplyCompletedFile(page, bytes) {
                 fixtureCalls.push('readFile');
                 return { '@type': 'filePart', data: new Blob([bytes], { type: 'audio/mpeg' }).slice(query.offset ?? 0, (query.offset ?? 0) + (query.count || bytes.length)) };
             }
+            if (query['@type'] === 'getFileDownloadedPrefixSize')
+                return { '@type': 'fileDownloadedPrefixSize', size: Math.max(0, bytes.length - query.offset) };
             const response = await original.call(this, query);
-            if (query['@type'] === 'getMessage') {
-                const file = response.content.audio.audio;
-                file.size = file.expected_size = bytes.length;
-                file.local.is_downloading_completed = true; file.local.is_downloading_active = false; file.local.downloaded_size = bytes.length;
-            }
+            // Background source audits must see the same replacement as direct reads.
+            const complete = file => {
+                const size = globalThis.tagTestBytes.length;
+                file.size = file.expected_size = size;
+                file.local.is_downloading_completed = true; file.local.is_downloading_active = false; file.local.downloaded_size = size;
+            };
+            if (query['@type'] === 'getMessage') complete(response.content.audio.audio);
+            if (query['@type'] === 'getMessages' || query['@type'] === 'searchChatMessages')
+                for (const message of response.messages) if (message?.content?.audio) complete(message.content.audio.audio);
+            if (query['@type'] === 'downloadFile') complete(response);
             return response;
         };
     }, bytes.toString('base64'));
@@ -291,8 +298,12 @@ for (const version of [3, 4]) {
         await fs.mkdir('artifacts/browser-review', { recursive: true });
         await download.saveAs(`artifacts/browser-review/web-tags-v2${version}.mp3`);
 
-        // Read the exported bytes back through the actual web adapter/editor.
+        // Export leaves the indexed source labels and original bytes unchanged.
         await dialog.getByRole('button', { name: 'Close details' }).click();
+        await expect(page.locator('.track .music-track-title strong')).toHaveText('File title');
+        expect(Buffer.from(await page.evaluate(() => Array.from(tagTestBytes)))).toEqual(source);
+
+        // Substituting the export as a new source lets the real editor read it back.
         await supplyCompletedFile(page, exported); dialog = await editor(page); await read(page, dialog, false);
         for (const [label, value] of Object.entries(values)) await expect(dialog.getByLabel(label, { exact: true })).toHaveValue(value);
         await expect(dialog.getByLabel('Artwork', { exact: true }).getByRole('option')).toHaveCount(2);
@@ -314,6 +325,6 @@ for (const version of [3, 4]) {
         }, exported.toString('base64'));
         expect(decoded.duration).toBeGreaterThan(29); expect(decoded.duration).toBeLessThan(31); expect(decoded.advanced).toBe(true);
         await dialog.getByRole('button', { name: 'Close details' }).click();
-        await expect(page.locator('.track .music-track-title strong')).toHaveText('Café 🎵');
+        await expect(page.locator('.track .music-track-title strong')).toHaveText(values.Title);
     });
 }

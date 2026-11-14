@@ -39,14 +39,20 @@ jobs:
       - run: dotnet run --project tests/ChannelWave.Core.Tests -c Release --no-build
       - run: git diff --exit-code
   browser:
-    timeout-minutes: 60
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-24.04, browser: chromium }
-          - { os: windows-2025, browser: msedge }
-          - { os: macos-26, browser: webkit }
+          - { os: ubuntu-24.04, browser: chromium, shard: 1, shards: 4 }
+          - { os: ubuntu-24.04, browser: chromium, shard: 2, shards: 4 }
+          - { os: ubuntu-24.04, browser: chromium, shard: 3, shards: 4 }
+          - { os: ubuntu-24.04, browser: chromium, shard: 4, shards: 4 }
+          - { os: windows-2025, browser: msedge, shard: 1, shards: 4 }
+          - { os: windows-2025, browser: msedge, shard: 2, shards: 4 }
+          - { os: windows-2025, browser: msedge, shard: 3, shards: 4 }
+          - { os: windows-2025, browser: msedge, shard: 4, shards: 4 }
+          - { os: macos-26, browser: webkit, shard: 1, shards: 1 }
     runs-on: ${{ matrix.os }}
     env:
       CHANNELWAVE_BROWSER: ${{ matrix.browser }}
@@ -68,8 +74,8 @@ jobs:
       - if: matrix.browser == 'msedge'
         run: npx playwright install ffmpeg
       - if: matrix.browser != 'webkit'
-        name: Full browser and adapter suite
-        run: npm run test:browser
+        name: Browser and adapter suite (${{ matrix.shard }}/${{ matrix.shards }})
+        run: npm run test:browser -- --shard=${{ matrix.shard }}/${{ matrix.shards }}
       - if: matrix.browser == 'webkit'
         name: Shared Apple UI (native storage/audio are validated separately)
         run: npm run test:browser -- apple-ui.spec.mjs
@@ -77,7 +83,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: browser-${{ matrix.browser }}-${{ github.run_attempt }}
+          name: browser-${{ matrix.browser }}-${{ matrix.shard }}-${{ github.run_attempt }}
           path: |
             test-results/
             playwright-report/
