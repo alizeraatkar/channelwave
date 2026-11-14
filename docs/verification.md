@@ -5,6 +5,18 @@ Telegram fixtures do not establish authenticated Telegram behavior. Native
 compilation, isolated container checks and package inspection do not establish
 physical-device acceptance. No target is release-validated.
 
+## 2026-11-14: first installer release test
+
+The clean-directory packaging test exposed a Windows artifact scan that ran before
+its publish folder existed. The scan now runs after publishing and before the
+native probe and archive creation. Integration tests execute the packaging script
+with synthetic publish output and the real artifact scanner: a first package is
+created successfully, and secret-bearing output is rejected before archiving.
+These tests verify packaging order and the security gate; native compilation and
+startup remain separate hosted release checks. All 68 Python CI tests pass locally.
+Run them with `python -m unittest discover -s tests/ci -v`; PowerShell 7 (`pwsh`)
+is required for the packaging cases.
+
 ## 2026-11-14: initial GitHub Actions fixes
 
 The first public-repository run failed Windows MAUI restore because the SDK's
