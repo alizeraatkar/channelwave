@@ -3,6 +3,10 @@ import { seed } from './fixtures/redesign.mjs';
 import { openRoot, openCategory } from './fixtures/telegram.mjs';
 
 const bridge = '/_content/ChannelWave.Platform.Browser/channelwave.js';
+async function reloadApp(page) {
+    await page.reload();
+    await expect(page.locator('.app-shell')).toBeVisible({ timeout: 20000 });
+}
 async function retainSession(page) {
     await page.evaluate(() => new Promise((resolve, reject) => {
         const r = indexedDB.open('/channelwave-telegram/dbfs', 1);
@@ -24,7 +28,7 @@ test('recent listens page beyond one hundred distinct tracks and play the comple
         return { lengths: pages.map(p => p.length), distinct: new Set(pages.flat().map(t => t.trackId)).size, first: pages[0][0].trackId, expected: discoveryTracks[0].id };
     }, bridge);
     expect(result.lengths).toEqual([100, 100, 5]); expect(result.distinct).toBe(205); expect(result.first).toBe(result.expected);
-    await page.reload(); await openRoot(page, 'Home'); await page.getByRole('tab', { name: 'Recently Played', exact: true }).click();
+    await reloadApp(page); await openRoot(page, 'Home'); await page.getByRole('tab', { name: 'Recently Played', exact: true }).click();
     await expect(page.locator('.home-collection [data-loaded-count]')).toHaveAttribute('data-loaded-count', '100');
     await page.locator('.home-track').first().getByRole('button', { name: 'Play', exact: true }).click();
     const player = page.getByRole('region', { name: 'Now playing', exact: true });
@@ -88,7 +92,7 @@ test('deleted playlist filters stay unavailable and playlist search honors List'
         await lib.saveState(700, 'library-presentation-v1', JSON.stringify({ Version: 1, Tabs: [], Displays: {}, Filters: [{ Id: filterId, Name: 'Playlist filter', ShowInLibrary: true, Query: { Criteria: { Text: 'Song 00002' }, Chat: -100123, PlaylistId: id, Sort: 2, Offset: 0, Limit: 100 } }] }));
         globalThis.deletedPlaylistId = id;
     }, bridge);
-    await page.reload(); await openRoot(page, 'Library');
+    await reloadApp(page); await openRoot(page, 'Library');
     await page.getByRole('button', { name: 'Open search', exact: true }).click();
     await page.getByRole('group', { name: 'Search result types' }).getByRole('button', { name: 'Playlists', exact: true }).click();
     await expect(page.getByRole('button', { name: 'Grid view', exact: true })).toHaveAttribute('aria-pressed', 'true');
@@ -98,13 +102,13 @@ test('deleted playlist filters stay unavailable and playlist search honors List'
     await page.getByRole('button', { name: 'Playlist filter Saved filter', exact: true }).click();
     await expect(page.getByLabel('Sort playlist', { exact: true })).toHaveValue('Artist');
     await expect(page.locator('.music-track-title strong')).toHaveText(['Song 00002']);
-    await page.reload();
+    await reloadApp(page);
     await expect(page.getByLabel('Sort playlist', { exact: true })).toHaveValue('Artist');
     await expect(page.getByRole('searchbox', { name: 'Search this playlist', exact: true })).toHaveValue('Song 00002');
     await expect(page.getByLabel('Source', { exact: true })).toContainText('Café Sessions');
     await expect(page.locator('.music-track-title strong')).toHaveText(['Song 00002']);
     await page.evaluate(async path => (await import(path)).saveState(700, 'playlists', '[]'), bridge);
-    await page.reload();
+    await reloadApp(page);
     await expect(page.getByText('This playlist is no longer available.', { exact: false })).toBeVisible();
     await expect(page.locator('.music-track')).toHaveCount(0);
     await page.getByRole('button', { name: 'Open Library', exact: true }).click();
@@ -118,14 +122,14 @@ test('saved queries remain live, missing pins are recoverable, and drag reorder 
         await lib.saveState(700, 'library-presentation-v1', JSON.stringify({ Version: 1, Displays: {}, Filters: [{ Id: id, Name: 'Live tracks', ShowInLibrary: true, Query: { Criteria: { Text: 'Song' }, Offset: 0, Limit: 100 } }],
             Tabs: [{ Id: 'live', Label: 'Live tracks', Item: { Kind: 4, Key: id, Label: 'Live tracks' } }, { Id: 'missing', Label: 'Removed recording', Item: { Kind: 3, Key: crypto.randomUUID(), Label: 'Removed recording' } }] }));
     }, bridge);
-    await page.reload(); await openRoot(page, 'Home');
+    await reloadApp(page); await openRoot(page, 'Home');
     await page.getByRole('tab', { name: 'Live tracks', exact: true }).click();
     await expect(page.locator('.home-collection [data-loaded-count]')).toHaveAttribute('data-loaded-count', '12');
     await page.evaluate(async path => {
         const lib = await import(path), first = JSON.parse(await lib.searchLibrary(700, '', 0, 1))[0];
         await lib.savePage(JSON.stringify({ accountId: 700, chatId: -100123, name: first.origin.sourceName }), JSON.stringify([{ ...first, id: crypto.randomUUID(), identity: '700:-100123:999', origin: { ...first.origin, messageId: 999 }, title: 'Song newly added', originalTitle: 'Song newly added' }]));
     }, bridge);
-    await page.reload();
+    await reloadApp(page);
     await expect(page.getByRole('tab', { name: 'All', exact: true })).toHaveAttribute('aria-selected', 'true');
     await page.getByRole('tab', { name: 'Live tracks', exact: true }).click();
     await expect(page.locator('.home-collection [data-loaded-count]')).toHaveAttribute('data-loaded-count', '13');
@@ -139,7 +143,7 @@ test('saved queries remain live, missing pins are recoverable, and drag reorder 
     await page.mouse.move(start.x + start.width / 2, start.y + start.height / 2);
     await page.mouse.down(); await page.mouse.move(end.x + end.width / 2, end.y + end.height / 2, { steps: 8 }); await page.mouse.up();
     await expect(rows.nth(2)).toHaveAttribute('data-tab-id', 'live');
-    await page.reload(); await expect(rows.nth(2)).toHaveAttribute('data-tab-id', 'live');
+    await reloadApp(page); await expect(rows.nth(2)).toHaveAttribute('data-tab-id', 'live');
 });
 
 test('all Library tiles have focused routes and 200 percent layout remains usable', async ({ page }) => {

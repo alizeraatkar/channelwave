@@ -30,6 +30,18 @@ reload in the same browser task and asserts the new document's initial alias.
 Existing canonical-route, history-index and Back/Forward assertions remain.
 Both aliases passed three local repetitions each after this correction.
 
+The next Edge run passed 242 tests before a playlist clearance assertion measured
+an offscreen selection after the screenshot setup reset scrolling. The test now
+scrolls the selected row into view before measuring its clearance; all four
+viewport cases passed locally. Eight reconnect cases also passed after explicit
+startup readiness checks. Reload tests wait for the app shell before checking
+restored playlist state, preserving their existing state and navigation assertions.
+
+The full browser job budget is 60 minutes: the Edge job took about 37 minutes to
+reach 242 of 347 cases. Per-test deadlines, zero retries, assertions and required
+checks are unchanged. Native builds for all four platforms, the shared OS matrix,
+WebKit and both security jobs passed in the preceding hosted run.
+
 ## 2026-11-13: Android scrolling and navigation
 
 Environment: Android 16 x64 emulator (`emulator-5554`), WebView 133, .NET SDK

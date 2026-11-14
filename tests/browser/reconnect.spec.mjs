@@ -93,6 +93,7 @@ test('automatic connection failure stays recoverable through manual Connect', as
     await installTelegramFixture(page);
     await installLoadingGates(page);
     await page.goto('/');
+    await expect(page.locator('.app-shell')).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole('button', { name: 'Connect account', exact: true })).toBeEnabled();
     await expect.poll(() => page.evaluate(() => fixtureSessionProbes), { timeout: 15000 }).toBe(1);
     await saveSyntheticSession(page);
@@ -113,6 +114,7 @@ test('an expired saved session opens the normal authentication form', async ({ p
     await installTelegramFixture(page, 'auth');
     await installLoadingGates(page);
     await page.goto('/');
+    await expect(page.locator('.app-shell')).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole('button', { name: 'Connect account', exact: true })).toBeEnabled();
     await expect.poll(() => page.evaluate(() => fixtureSessionProbes), { timeout: 15000 }).toBe(1);
     await saveSyntheticSession(page);
@@ -128,6 +130,7 @@ test('pending sign-out cleanup prevents automatic session restoration', async ({
     await installTelegramFixture(page);
     await installLoadingGates(page);
     await page.goto('/');
+    await expect(page.locator('.app-shell')).toBeVisible({ timeout: 20000 });
     await expect(page.getByRole('button', { name: 'Connect account', exact: true })).toBeEnabled();
     await expect.poll(() => page.evaluate(() => fixtureSessionProbes), { timeout: 15000 }).toBe(1);
     await saveSyntheticSession(page);

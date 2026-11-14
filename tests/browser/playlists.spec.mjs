@@ -241,13 +241,16 @@ for (const width of [1440, 390, 320, 820]) {
         await page.emulateMedia({ reducedMotion: 'reduce' });
         await fs.mkdir('artifacts/playlists', { recursive: true });
         await page.locator('#main-content').evaluate(el => { el.scrollTop = 0; });
+        await page.screenshot({ path: `artifacts/playlists/management-${width}.png`, fullPage: true });
+        await library(page).locator('.track').first().scrollIntoViewIfNeeded();
         if (width === 390) {
-            const checkbox = await library(page).getByLabel('Select Song 003', { exact: true }).boundingBox();
+            const selection = library(page).getByLabel('Select Song 003', { exact: true });
+            await selection.scrollIntoViewIfNeeded();
+            await expect(selection).toBeInViewport({ ratio: 1 });
+            const checkbox = await selection.boundingBox();
             const dock = await page.locator('.idle-player').boundingBox();
             expect(checkbox.y + checkbox.height).toBeLessThanOrEqual(dock.y);
         }
-        await page.screenshot({ path: `artifacts/playlists/management-${width}.png`, fullPage: true });
-        await library(page).locator('.track').first().scrollIntoViewIfNeeded();
         await expect(library(page).getByRole('button', { name: 'Move Song 003 down', exact: true })).toBeInViewport();
         await page.screenshot({ path: `artifacts/playlists/rows-${width}.png`, fullPage: true });
         await action(page, 'Rename');
