@@ -5,6 +5,15 @@ Telegram fixtures do not establish authenticated Telegram behavior. Native
 compilation, isolated container checks and package inspection do not establish
 physical-device acceptance. No target is release-validated.
 
+## 2026-11-15: hosted Windows audio
+
+Beta.2 built all packages but its Windows smoke test failed at audio load. An
+isolated runner probe reproduced error `C00D36FA` with zero render endpoints;
+installing Media Foundation alone did not resolve it. With the pinned, signed
+virtual CI output installed, the same MP3 decoded to 30.067 seconds and playback
+advanced. The release job now provisions that endpoint before testing the actual
+packaged application. No audio checks are skipped and the driver is not shipped.
+
 ## 2026-11-15: canceled tag-read fixture
 
 The tag-read fixture waits for the replacement TDLib download callback after

@@ -148,3 +148,11 @@ tdweb assets; ordinary suite results do not claim real TDLib/browser authenticat
 Native initialization/audio diagnostics perform no login. Android package signature,
 identity and version checks do not establish physical-device upgrade/data safety.
 Record actual device, signing and authenticated-Telegram limits in verification.md.
+
+## Windows audio on hosted runners
+
+The Windows package smoke test needs a render endpoint. Its disposable hosted
+runner installs Media Foundation and a checksum-pinned, signature-verified
+[Scream virtual audio driver](https://github.com/duncanthrax/scream). The driver is
+used only by CI and is not included in ChannelWave packages. Provisioning fails
+if no endpoint appears; decoding and playback checks remain required.

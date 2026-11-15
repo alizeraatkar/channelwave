@@ -77,6 +77,10 @@ jobs:
           RELEASE_VERSION: ${{ inputs.version }}
           RELEASE_BUILD_NUMBER: ${{ inputs.build-number }}
         run: ./scripts/package-desktop.ps1 -Platform '${{ matrix.platform }}' -Version $env:RELEASE_VERSION -BuildNumber $env:RELEASE_BUILD_NUMBER
+      - name: Provision hosted Windows audio
+        if: matrix.enabled && matrix.platform == 'windows'
+        shell: pwsh
+        run: ./scripts/setup-windows-ci-audio.ps1
       - name: Native startup smoke
         if: matrix.enabled
         shell: pwsh
