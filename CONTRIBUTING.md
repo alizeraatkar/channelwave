@@ -64,3 +64,11 @@ signing keys out of Git and test logs. Use ignored `channelwave.local.json` for
 local application configuration. Preserve the pinned TDLib revision, schema checks,
 account-scoped storage boundaries and third-party notices. Report vulnerabilities
 using [SECURITY.md](SECURITY.md).
+
+## Commit messages and releases
+
+Use `fix: description` for fixes, `feat: description` for features, and
+`type!: description` or a `BREAKING CHANGE:` footer for incompatible changes.
+Scopes such as `fix(audio): ...` are supported. These messages choose the next
+version after a stable release; other messages default to a patch cycle.
+See [release operations](docs/releases.md) for beta builds and stable promotion.

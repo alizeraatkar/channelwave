@@ -5,6 +5,15 @@ Telegram fixtures do not establish authenticated Telegram behavior. Native
 compilation, isolated container checks and package inspection do not establish
 physical-device acceptance. No target is release-validated.
 
+## 2026-11-15: semantic release automation
+
+Release regression tests cover commit-based patch/minor/major planning, real Git
+history ranges, stable promotion prerequisites, stable asset integrity, independent
+beta/stable reruns, legacy beta recovery, draft exclusion and prevention of stable
+version rollback. Stable promotion has not been exercised against a public stable
+release; this setup keeps that readiness decision manual. Existing artifact,
+signing and same-commit validation gates remain required.
+
 ## 2026-11-15: hosted Windows audio
 
 Beta.2 built all packages but its Windows smoke test failed at audio load. An

@@ -1,4 +1,4 @@
-"""Same-commit beta reservations and idempotent publication. No third-party packages."""
+"""Semantic beta cycles, tested stable releases and immutable publication."""
 import argparse
 import hashlib
 import json
@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import subprocess
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -88,18 +89,43 @@ def ensure_main(api, sha):
         raise ValueError('Release commit must belong to main history')
 
 
-def reservation(api, config, sha, run_id, recover_tag=None):
+def version_tuple(value):
+    if not re.fullmatch(r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)', value):
+        raise ValueError('Invalid semantic version')
+    return tuple(map(int, value.split('.')))
+
+
+def next_base(previous, messages):
+    major, minor, patch = version_tuple(previous)
+    if any(re.match(r'[a-z]+(?:\([^\n)]+\))?!: ', message)
+           or re.search(r'^BREAKING[ -]CHANGE: ', message, re.MULTILINE) for message in messages):
+        return f'{major + 1}.0.0'
+    if any(re.match(r'feat(?:\([^\n)]+\))?: ', message) for message in messages):
+        return f'{major}.{minor + 1}.0'
+    # Every push produces a beta, including docs and untyped commits.
+    return f'{major}.{minor}.{patch + 1}'
+
+
+def commit_messages(tag, sha):
+    subprocess.run(['git', 'merge-base', '--is-ancestor', tag, sha], check=True, capture_output=True)
+    result = subprocess.run(['git', 'log', '--format=%B%x00', f'{tag}..{sha}'],
+                            check=True, capture_output=True, text=True, encoding='utf-8')
+    return [message.strip() for message in result.stdout.split('\0') if message.strip()]
+
+
+def reservation(api, config, sha, run_id, recover_tag=None, channel='beta'):
     ensure_main(api, sha)
-    prefix = 'v' + config['baseVersion'] + '-beta.'
+    if channel not in ('beta', 'stable'):
+        raise ValueError('Invalid release channel')
+    if recover_tag:
+        channel = 'beta' if '-beta.' in recover_tag else 'stable'
     refs = api.request('GET', '/git/matching-refs/tags/v') or []
-    sequence, build = 0, config['minimumBuildNumber']
-    existing = []
+    build = config['minimumBuildNumber']
+    existing, reservations = [], []
     for ref in refs:
         tag = ref['ref'].removeprefix('refs/tags/')
-        if re.fullmatch(re.escape(prefix) + r'[1-9]\d*', tag):
-            sequence = max(sequence, int(tag[len(prefix):]))
         if ref['object']['type'] != 'tag':
-            continue  # Legacy tags are never mistaken for pipeline reservations.
+            continue
         obj = api.request('GET', '/git/tags/' + ref['object']['sha'])
         try:
             metadata = json.loads(obj['message'])
@@ -109,30 +135,58 @@ def reservation(api, config, sha, run_id, recover_tag=None):
             continue
         if metadata['commit'] != obj['object']['sha'] or metadata['tag'] != tag:
             raise ValueError('Reservation tag metadata does not match its commit')
+        reservations.append(metadata)
         build = max(build, metadata['buildNumber'])
-        if metadata['commit'] == sha:
+        same_channel = ('-beta.' in tag) == (channel == 'beta')
+        if metadata['commit'] == sha and same_channel:
             existing.append(metadata)
     if len(existing) > 1:
-        raise ValueError('Multiple reservations for one commit require operator investigation')
+        raise ValueError('Multiple reservations for one commit/channel require operator investigation')
     if existing:
         result = existing[0]
         if recover_tag and result['tag'] != recover_tag:
             raise ValueError('Recovery tag does not match the reserved commit')
-        # Configuration is immutable for the lifetime of a reservation.
-        if result['platforms'] != config['platforms'] or result['toolchain'] != config['toolchain'] or result['baseVersion'] != config['baseVersion']:
+        if (result['platforms'] != config['platforms'] or result['toolchain'] != config['toolchain']
+                or result.get('versionFloor', result['baseVersion']) != config['baseVersion']):
             raise ValueError('Recovery must use the reserved platform configuration')
         return result
     if recover_tag:
         raise ValueError('Recovery requires an existing pipeline reservation')
+    releases = [value for value in api.pages('/releases') if value and not value['draft']]
+    if channel == 'stable':
+        candidates = [value for value in reservations if value['commit'] == sha and '-beta.' in value['tag']]
+        if len(candidates) != 1:
+            raise ValueError('Stable release requires one tested beta reservation for this commit')
+        beta = candidates[0]
+        verify_published(api, beta)
+        if beta['platforms'] != config['platforms'] or beta['toolchain'] != config['toolchain']:
+            raise ValueError('Stable release must use the tested beta configuration')
+        base = beta['baseVersion']
+        if any(not value['prerelease'] and re.fullmatch(r'v\d+\.\d+\.\d+', value['tag_name'])
+               and version_tuple(value['tag_name'][1:]) >= version_tuple(base) for value in releases):
+            raise ValueError('Stable releases must increase the published version')
+        tag = 'v' + base
+        if any(ref['ref'] == 'refs/tags/' + tag for ref in refs):
+            raise ValueError('Stable version already reserved; recover its original commit')
+    else:
+        stable = [value['tag_name'] for value in releases if not value['prerelease']
+                  and re.fullmatch(r'v\d+\.\d+\.\d+', value['tag_name'])]
+        base = config['baseVersion']
+        if stable:
+            latest = max(stable, key=lambda tag: version_tuple(tag[1:]))
+            proposed = next_base(latest[1:], commit_messages(latest, sha))
+            base = max((base, proposed), key=version_tuple)
+        prefix = 'v' + base + '-beta.'
+        sequence = max([int(ref['ref'].split(prefix)[1]) for ref in refs
+                        if re.fullmatch(re.escape('refs/tags/' + prefix) + r'[1-9]\d*', ref['ref'])] or [0])
+        tag = prefix + str(sequence + 1)
     if not 0 < build + 1 <= 2100000000:
         raise ValueError('Android build number exhausted')
-    tag = prefix + str(sequence + 1)
     result = {'schema': 1, 'application': 'ChannelWave', 'tag': tag, 'version': tag[1:],
-              'baseVersion': config['baseVersion'], 'buildNumber': build + 1, 'commit': sha,
+              'baseVersion': base, 'versionFloor': config['baseVersion'], 'buildNumber': build + 1, 'commit': sha,
               'reservationRun': str(run_id), 'platforms': config['platforms'], 'toolchain': config['toolchain']}
     annotated = api.request('POST', '/git/tags', {'tag': tag, 'message': json.dumps(result, sort_keys=True),
                                                 'object': sha, 'type': 'commit'})
-    # Atomic ref creation rejects collisions. No force pushes, tag moves or version reuse.
     api.request('POST', '/git/refs', {'ref': 'refs/tags/' + tag, 'sha': annotated['sha']})
     return result
 
@@ -225,14 +279,18 @@ def publish(api, folder, reserved):
             raise ValueError('Multiple draft releases require operator investigation')
         release = drafts[0] if drafts else None
     pending = '\n'.join(f"- {key}: {value['reason']}" for key, value in reserved['platforms'].items() if not value['enabled'])
-    notes = (f"Commit: `{reserved['commit']}`\n\nAutomated beta; build {reserved['buildNumber']}. "
+    prerelease = '-beta.' in reserved['tag']
+    if release and release['prerelease'] != prerelease:
+        raise ValueError('Existing release channel differs from the reservation')
+    label = 'beta' if prerelease else 'stable release'
+    notes = (f"Commit: `{reserved['commit']}`\n\nAutomated {label}; build {reserved['buildNumber']}. "
              'Windows is an unsigned portable build. See SHA256SUMS and release-manifest.json.\n\n'
              + ('Pending platforms:\n' + pending + '\n\n' if pending else '')
              + 'iOS delivery, when enabled, is through internal TestFlight.\n')
     if not release:
         generated = api.request('POST', '/releases/generate-notes', {'tag_name': reserved['tag'], 'target_commitish': reserved['commit']})
         release = api.request('POST', '/releases', {'tag_name': reserved['tag'], 'target_commitish': reserved['commit'],
-            'name': 'ChannelWave ' + reserved['version'], 'body': notes + '\n' + generated['body'], 'draft': True, 'prerelease': True})
+            'name': 'ChannelWave ' + reserved['version'], 'body': notes + '\n' + generated['body'], 'draft': True, 'prerelease': prerelease})
     uploaded = {value['name']: value for value in api.pages(f"/releases/{release['id']}/assets")}
     if set(uploaded) - set(assets):
         raise ValueError('Unexpected assets already exist on this release')
@@ -251,14 +309,14 @@ def publish(api, folder, reserved):
     if set(uploaded) != set(assets) or any(uploaded[name].get('digest') != 'sha256:' + value['sha256'] for name, value in assets.items()):
         raise ValueError('Server asset digest verification failed')
     if release['draft']:
-        api.request('PATCH', f"/releases/{release['id']}", {'draft': False, 'prerelease': True, 'make_latest': 'false'})
+        api.request('PATCH', f"/releases/{release['id']}", {'draft': False, 'prerelease': prerelease, 'make_latest': 'false' if prerelease else 'true'})
     return release['html_url']
 
 
 def verify_published(api, reserved):
     value = api.request('GET', '/releases/tags/' + reserved['tag'])
-    if not value or value['draft'] or not value['prerelease']:
-        raise ValueError('Expected an existing published beta')
+    if not value or value['draft'] or value['prerelease'] != ('-beta.' in reserved['tag']):
+        raise ValueError('Expected a published release with the reserved channel')
     assets = api.pages(f"/releases/{value['id']}/assets")
     indexed = {asset['name']: asset for asset in assets}
     if len(indexed) != len(assets) or 'release-manifest.json' not in indexed:
@@ -291,6 +349,7 @@ def main():
     parser.add_argument('command', choices=['config', 'resolve', 'reserve', 'package', 'publish', 'verify-published'])
     parser.add_argument('--sha', default=os.environ.get('GITHUB_SHA'))
     parser.add_argument('--recover-tag')
+    parser.add_argument('--channel', choices=['beta', 'stable'], default='beta')
     parser.add_argument('--reservation', default='artifacts/reservation.json')
     parser.add_argument('--folder', default='artifacts/release')
     parser.add_argument('--platform')
@@ -302,7 +361,7 @@ def main():
     elif args.command == 'resolve':
         sha = args.sha
         if args.recover_tag:
-            if not re.fullmatch(r'v\d+\.\d+\.\d+-beta\.[1-9]\d*', args.recover_tag):
+            if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-beta\.[1-9]\d*)?', args.recover_tag):
                 raise ValueError('Invalid recovery tag')
             api = GitHub()
             ref = api.request('GET', '/git/ref/tags/' + args.recover_tag)
@@ -316,7 +375,7 @@ def main():
             ensure_main(api, sha)
         outputs({'sha': sha})
     elif args.command == 'reserve':
-        value = reservation(GitHub(), read_config(), args.sha, os.environ['GITHUB_RUN_ID'], args.recover_tag)
+        value = reservation(GitHub(), read_config(), args.sha, os.environ['GITHUB_RUN_ID'], args.recover_tag, args.channel)
         target = Path(args.reservation); target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(json.dumps(value, indent=2, sort_keys=True) + '\n', newline='\n')
         outputs({'version': value['version'], 'base-version': value['baseVersion'], 'build-number': value['buildNumber'], 'tag': value['tag']})

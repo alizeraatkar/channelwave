@@ -5,8 +5,13 @@ on:
   pull_request:
   workflow_dispatch:
     inputs:
+      release-channel:
+        description: 'Beta builds automatically; stable requires an already-published beta at main HEAD'
+        type: choice
+        options: [beta, stable]
+        default: beta
       recovery-tag:
-        description: 'Existing reserved beta tag to recover; empty validates only'
+        description: 'Existing reserved tag to recover; empty beta dispatch validates only'
         required: false
         type: string
 permissions:
@@ -41,7 +46,7 @@ jobs:
     uses: ./.github/workflows/checks.yml
     with: { sha: '${{ needs.source.outputs.sha }}' }
   reserve:
-    if: vars.CHANNELWAVE_ENABLE_RELEASES == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.recovery-tag != '')
+    if: vars.CHANNELWAVE_ENABLE_RELEASES == 'true' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || inputs.recovery-tag != '' || inputs.release-channel == 'stable')
     needs: [checks, source]
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -59,15 +64,16 @@ jobs:
       ios: ${{ steps.config.outputs.ios }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with: { ref: '${{ needs.source.outputs.sha }}', persist-credentials: false }
+        with: { ref: '${{ needs.source.outputs.sha }}', fetch-depth: 0, persist-credentials: false }
       - id: config
         run: python3 scripts/release.py config
       - id: reserve
         env:
           GH_TOKEN: ${{ github.token }}
           RECOVERY_TAG: ${{ inputs.recovery-tag }}
+          RELEASE_CHANNEL: ${{ inputs.release-channel || 'beta' }}
         run: |
-          args=()
+          args=(--channel "$RELEASE_CHANNEL")
           if [[ -n "$RECOVERY_TAG" ]]; then args+=(--recover-tag "$RECOVERY_TAG"); fi
           python3 scripts/release.py reserve --sha '${{ needs.source.outputs.sha }}' "${args[@]}"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -159,12 +165,12 @@ jobs:
           pattern: release-*
           merge-multiple: true
           path: artifacts/release
-      - name: Verify and publish the complete beta
+      - name: Verify and publish the complete release
         if: needs.reserve.outputs.published != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 scripts/release.py publish
-      - name: Verify existing immutable beta (rerun)
+      - name: Verify existing immutable release (rerun)
         if: needs.reserve.outputs.published == 'true'
         env:
           GH_TOKEN: ${{ github.token }}

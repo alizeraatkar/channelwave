@@ -3,6 +3,8 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
+import subprocess
 
 spec = importlib.util.spec_from_file_location('release', Path(__file__).parents[2] / 'scripts/release.py')
 release = importlib.util.module_from_spec(spec)
@@ -193,3 +195,103 @@ class ReleaseTests(unittest.TestCase):
 
 
 if __name__ == '__main__': unittest.main()
+
+
+class VersionAutomationTests(unittest.TestCase):
+    setUp = ReleaseTests.setUp
+    reserve = ReleaseTests.reserve
+    packages = ReleaseTests.packages
+    def test_conventional_changes_choose_semantic_base(self):
+        for messages, expected in [(['fix: resume playback'], '1.2.4'),
+                                   (['docs: setup'], '1.2.4'),
+                                   (['Unstructured commit'], '1.2.4'),
+                                   (['feat(audio): add casting', 'fix: cleanup'], '1.3.0'),
+                                   (['feat(api)!: remove old settings'], '2.0.0'),
+                                   (['refactor: storage\n\nBREAKING CHANGE: schema removed'], '2.0.0')]:
+            with self.subTest(messages=messages):
+                self.assertEqual(release.next_base('1.2.3', messages), expected)
+
+    def test_stable_requires_a_published_beta(self):
+        with self.assertRaisesRegex(ValueError, 'tested beta'):
+            release.reservation(self.api, self.config, SHA, '42', channel='stable')
+        self.reserve()
+        with self.assertRaisesRegex(ValueError, 'published release'):
+            release.reservation(self.api, self.config, SHA, '42', channel='stable')
+
+    def test_stable_gets_new_build_and_reruns_are_idempotent(self):
+        beta = self.reserve(); self.packages(beta); release.publish(self.api, self.folder, beta)
+        stable = release.reservation(self.api, self.config, SHA, '43', channel='stable')
+        self.assertEqual(stable['tag'], 'v0.1.0')
+        self.assertEqual(stable['buildNumber'], beta['buildNumber'] + 1)
+        self.api.writes.clear()
+        self.assertEqual(release.reservation(self.api, self.config, SHA, '44', channel='stable'), stable)
+        self.assertEqual(self.reserve(), beta)
+        self.assertEqual(release.reservation(self.api, self.config, SHA, '44', stable['tag']), stable)
+        self.assertEqual(self.api.writes, [])
+
+    def test_stable_publish_is_not_a_prerelease_and_is_latest(self):
+        value = self.reserve()
+        value = value | {'tag': 'v0.1.0', 'version': '0.1.0'}
+        obj = self.api.request('POST', '/git/tags', {'tag': value['tag'], 'message': json.dumps(value), 'object': SHA})
+        self.api.request('POST', '/git/refs', {'ref': 'refs/tags/' + value['tag'], 'sha': obj['sha']})
+        self.packages(value)
+        release.publish(self.api, self.folder, value)
+        self.assertFalse(self.api.release['prerelease'])
+        self.assertEqual(self.api.release['make_latest'], 'true')
+        self.assertEqual(release.verify_published(self.api, value), self.api.release['html_url'])
+        self.api.release['prerelease'] = True
+        with self.assertRaisesRegex(ValueError, 'reserved channel'):
+            release.verify_published(self.api, value)
+
+    def test_after_stable_pushes_advance_automatically_and_keep_build_counter(self):
+        self.api.release = {'tag_name': 'v0.1.0', 'draft': False, 'prerelease': False}
+        with patch.object(release, 'commit_messages', return_value=['fix: audio']):
+            value = self.reserve()
+        self.assertEqual(value['tag'], 'v0.1.1-beta.1')
+        # Rerunning after another stable publication must retain its original reservation.
+        self.api.release['tag_name'] = 'v0.2.0'
+        with patch.object(release, 'commit_messages', side_effect=AssertionError('rerun must not replan')):
+            self.assertEqual(self.reserve(), value)
+        with patch.object(release, 'commit_messages', return_value=['feat: casting']):
+            newer = self.reserve(OTHER)
+        self.assertEqual(newer['tag'], 'v0.3.0-beta.1')
+        self.assertGreater(newer['buildNumber'], value['buildNumber'])
+
+    def test_old_stable_cannot_replace_newer_published_version(self):
+        beta = self.reserve(); self.packages(beta); release.publish(self.api, self.folder, beta)
+        original_pages = self.api.pages
+        with patch.object(self.api, 'pages', side_effect=lambda path: original_pages(path) +
+                          ([{'tag_name': 'v0.2.0', 'draft': False, 'prerelease': False}] if path == '/releases' else [])):
+            with self.assertRaisesRegex(ValueError, 'increase the published'):
+                release.reservation(self.api, self.config, SHA, '43', channel='stable')
+
+    def test_real_git_history_is_bounded_by_stable_tag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            def git(*args):
+                return subprocess.check_output(['git', '-C', directory, *args], text=True).strip()
+            git('init', '-q'); git('config', 'user.name', 'Test'); git('config', 'user.email', 'test@example.test')
+            git('commit', '--allow-empty', '-qm', 'feat: old feature'); git('tag', 'v0.1.0')
+            git('commit', '--allow-empty', '-qm', 'fix: new fix')
+            sha = git('rev-parse', 'HEAD')
+            real_run = subprocess.run
+            with patch.object(release.subprocess, 'run') as run:
+                # Run the real reader in the temporary repository.
+                run.side_effect = lambda command, **kwargs: real_run(command, cwd=directory, **kwargs)
+                self.assertEqual(release.commit_messages('v0.1.0', sha), ['fix: new fix'])
+
+    def test_existing_legacy_beta_reservation_is_still_recoverable(self):
+        value = self.reserve()
+        value.pop('versionFloor')
+        self.api.tags['1']['message'] = json.dumps(value)
+        self.assertEqual(self.reserve(), value)
+
+    def test_draft_stable_does_not_start_a_new_cycle(self):
+        self.api.release = {'tag_name': 'v0.1.0', 'draft': True, 'prerelease': False}
+        with patch.object(release, 'commit_messages', side_effect=AssertionError('draft is not stable')):
+            self.assertEqual(self.reserve()['tag'], 'v0.1.0-beta.4')
+
+    def test_publish_rejects_an_existing_release_with_the_wrong_channel(self):
+        value = self.reserve(); self.packages(value); release.publish(self.api, self.folder, value)
+        self.api.release['prerelease'] = False
+        with self.assertRaisesRegex(ValueError, 'channel differs'):
+            release.publish(self.api, self.folder, value)

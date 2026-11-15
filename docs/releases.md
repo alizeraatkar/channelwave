@@ -15,19 +15,46 @@ reported rather than changing repository visibility.
 
 ## Policy and versions
 
-`.github/release.json` owns the base version, channel, toolchain, platform enablement,
-and the legacy Android build floor (6). Annotated beta tags reserve an immutable
-commit, platform policy and global build number. Failed reservations remain used;
-gaps are intentional. Future base-version changes retain the global build counter.
-Apple display versions omit the beta suffix and use the separate build number.
-Debian packages use `~beta.N`. Public releases are immutable prereleases and do not
-replace GitHub's stable/latest release.
+`.github/release.json` owns the initial version floor, toolchain, platform
+settings and Android build floor. Until the first stable release, pushes continue
+its beta cycle (`0.1.0-beta.4`, `0.1.0-beta.5`, ...).
+
+After a stable release, the pipeline reads every commit since its tag and chooses
+the next version using [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/):
+
+- `fix: ...` ? patch (`0.1.0` ? `0.1.1-beta.1`).
+- `feat: ...` ? minor (`0.1.0` ? `0.2.0-beta.1`).
+- `feat!: ...` or a `BREAKING CHANGE:` footer ? major (`0.1.0` ? `1.0.0-beta.1`).
+- Documentation, maintenance and untyped commits default to patch so every push
+  still produces a downloadable beta.
+
+The highest-impact change since the last stable release wins. Further pushes
+increment the beta counter for that calculated base. A feature added during a
+patch beta cycle starts a minor beta cycle. The configuration's version floor can
+be raised to target a particular milestone such as `1.0.0`.
+
+To publish a stable release, open **Actions ? ChannelWave pipeline ? Run workflow**,
+select `main`, set **release-channel** to **stable**, and leave **recovery-tag**
+empty. Main HEAD must already have a complete published beta. The pipeline verifies
+that beta's manifest and uploaded asset digests, reruns validation, and rebuilds
+installers from that exact commit with a higher internal build number. It then
+publishes the stable version (for example `0.1.0`) and marks it latest. Stable
+publication is an explicit readiness decision; successful CI alone keeps a beta.
+This automation setup does not itself publish a stable release.
+
+The next push automatically moves to the next semantic version; no version-file
+edit is needed. Android uses an always-increasing internal build number across
+both channels, and Windows keeps numeric package metadata. Published files and
+tags are immutable. Failed reservations leave intentional gaps. Reruns reuse the
+original reservation for the same commit and channel, including older betas after
+a stable release has been published. A manual beta dispatch with no recovery tag
+continues to validate only.
 
 Main runs serialize with an expanded concurrency queue (100 pending runs maximum).
 PR/branch runs cancel superseded validation. The queue does not promise commit-time
 ordering; reservation order determines version numbers. If a run is canceled or the
 queue fills, rerun the original main run after capacity returns. Do not dispatch a
-new unreserved beta for a different commit to disguise the missed run.
+new unreserved release for a different commit to disguise the missed run.
 
 ## Required credentials
 
@@ -73,7 +100,7 @@ For a transient failed job, use GitHub's rerun failed jobs on the original main 
 Artifact names remain stable within a run; reservations are read from immutable
 tags. For an expired artifact, rerun validation and rebuild before publication.
 For a reserved older main commit, dispatch the pipeline on main with `recovery-tag`
-set to that beta tag. The resolver verifies main ancestry and validates/builds the
+set to that reserved beta or stable tag. The resolver verifies main ancestry and validates/builds the
 reserved SHA, never the current branch head in its place.
 
 Draft uploads resume only when existing assets have the exact expected sizes and
