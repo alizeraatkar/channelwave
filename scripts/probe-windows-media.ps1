@@ -24,7 +24,14 @@ try {
  var file = await StorageFile.GetFileFromPathAsync(Path.GetFullPath(args[0]));
  player.Source = MediaSource.CreateFromStorageFile(file);
  Console.WriteLine(JsonSerializer.Serialize(await ready.Task.WaitAsync(TimeSpan.FromSeconds(20))));
-} catch (Exception e) { Console.WriteLine(JsonSerializer.Serialize(new { result = "exception", errorType = e.GetType().Name, code = e.HResult.ToString("X8"), message = e.Message })); }
+ if (args.Length > 1) {
+  if (player.PlaybackSession.NaturalDuration.TotalSeconds <= 0) throw new IOException("No decoded duration");
+  player.Volume = 0; player.Play();
+  using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+  while (player.PlaybackSession.Position.TotalSeconds <= 0) await Task.Delay(100, timeout.Token);
+  Console.WriteLine(JsonSerializer.Serialize(new { result = "playing", position = player.PlaybackSession.Position.TotalSeconds }));
+ }
+} catch (Exception e) { Console.WriteLine(JsonSerializer.Serialize(new { result = "exception", errorType = e.GetType().Name, code = e.HResult.ToString("X8"), message = e.Message })); if (args.Length > 1) Environment.ExitCode = 1; }
 "@ | Set-Content "$probe/Program.cs"
 dotnet run --project "$probe/Probe.csproj" -- "$PWD/tests/browser/fixtures/stream-tone.mp3"
 $feature = Get-WindowsFeature Server-Media-Foundation
@@ -37,4 +44,5 @@ foreach ($name in @('AudioEndpointBuilder', 'Audiosrv')) {
     Set-Service $name -StartupType Automatic
     Start-Service $name
 }
-dotnet run --project "$probe/Probe.csproj" --no-build -- "$PWD/tests/browser/fixtures/stream-tone.mp3"
+& "$PSScriptRoot/setup-windows-ci-audio.ps1"
+dotnet run --project "$probe/Probe.csproj" --no-build -- "$PWD/tests/browser/fixtures/stream-tone.mp3" --verify
